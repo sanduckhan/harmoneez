@@ -7,3 +7,7 @@ pyrubberband>=0.3
 pydub>=0.25
 soundfile>=0.12
 numpy>=1.24,<2
+pyworld>=0.3
+fastapi>=0.100
+uvicorn>=0.20
+python-multipart>=0.0.5
