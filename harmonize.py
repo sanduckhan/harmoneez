@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 Harmoneez — Vocal harmony generator for rock bands.
-Generates a diatonic third harmony from a song recording.
+Generates diatonic vocal harmonies from a song recording.
 
 Usage:
     python harmonize.py song.wav
-    python harmonize.py song.wav --key Gmajor
-    python harmonize.py song.wav --harmony-volume 0.5
+    python harmonize.py song.wav --key Ebm --interval 3rd-above
+    python harmonize.py song.wav --key Ebm --start 1:49 --end 2:07
+    python harmonize.py song.wav --key Ebm --start 1:49 --end 2:07 --interval all
 """
 
 import argparse
@@ -19,8 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import essentia.standard as es
+import librosa
 import numpy as np
-import pyrubberband as pyrb
 import soundfile as sf
 from music21 import key as m21key, pitch as m21pitch
 
@@ -28,9 +29,41 @@ from music21 import key as m21key, pitch as m21pitch
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
+INTERVAL_TYPES = ['3rd-above', '3rd-below', '5th', '6th', 'octave']
+INTERVAL_DEGREES = {
+    '3rd-above': +2,
+    '3rd-below': -2,
+    '5th': +4,
+    '6th': +5,
+    'octave': None,  # special case: always +12 semitones
+}
+
+# Chromatic fallback: fixed semitone shift when note is outside the key
+CHROMATIC_FALLBACK = {
+    '3rd-above': (+4, +3),    # (major key, minor key)
+    '3rd-below': (-3, -4),
+    '5th': (+7, +7),          # perfect 5th in both
+    '6th': (+9, +8),          # major 6th / minor 6th
+    'octave': (+12, +12),
+}
+
+# "Safe" semitone ranges for each interval type — if the diatonic result
+# falls outside this range, it's a diminished/augmented interval that
+# sounds bad, so we snap to the nearest safe value.
+INTERVAL_SAFE_RANGE = {
+    '3rd-above': (3, 4),
+    '3rd-below': (-4, -3),
+    '5th': (7, 7),            # only perfect 5th sounds good
+    '6th': (8, 9),
+    'octave': (12, 12),
+}
+
 MIN_NOTE_DURATION = 0.1       # seconds — notes shorter than this are melismatic
 CHROMATIC_HOLD_THRESHOLD = 0.2  # seconds — short chromatic notes get held
 MAX_HARMONY_MIDI = 84         # C6 — ceiling for pitch-shifted harmony (not a singing range limit)
+MIN_HARMONY_MIDI = 36         # C2 — floor for downward harmony intervals
+PITCH_CORRECT_STRENGTH = 0.8  # 0.0 = no correction, 1.0 = full snap to scale
+PITCH_CORRECT_THRESHOLD = 0.05  # semitones — skip correction below this
 MIN_SEGMENT_SAMPLES = 512     # minimum samples for rubberband to process
 CROSSFADE_MS = 15             # milliseconds crossfade between shifted segments
 SEGMENT_PAD_MS = 50           # milliseconds of padding before/after each note segment
@@ -61,10 +94,20 @@ class HarmonyNote:
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
+def parse_time(time_str: str) -> float:
+    """Parse '1:49' or '109' or '109.5' to seconds as float."""
+    if ':' in time_str:
+        parts = time_str.split(':')
+        if len(parts) != 2:
+            raise ValueError(f"Invalid time format: '{time_str}'. Use seconds (109) or mm:ss (1:49)")
+        return float(parts[0]) * 60 + float(parts[1])
+    return float(time_str)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog='harmonize',
-        description='Generate a diatonic third vocal harmony from a song recording.',
+        description='Generate diatonic vocal harmonies from a song recording.',
     )
     parser.add_argument(
         'input_file',
@@ -83,6 +126,29 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_HARMONY_VOLUME,
         help=f'Harmony volume in the mixed output, 0.0–1.0 (default: {DEFAULT_HARMONY_VOLUME})',
+    )
+    parser.add_argument(
+        '--interval',
+        type=str,
+        default='all',
+        help=f'Harmony interval type: {", ".join(INTERVAL_TYPES)}, or "all" (default: all)',
+    )
+    parser.add_argument(
+        '--no-pitch-correct',
+        action='store_true',
+        help='Skip pitch correction of the vocal before harmony generation',
+    )
+    parser.add_argument(
+        '--start',
+        type=str,
+        default=None,
+        help='Start time for section selection, in seconds (109) or mm:ss (1:49)',
+    )
+    parser.add_argument(
+        '--end',
+        type=str,
+        default=None,
+        help='End time for section selection, in seconds (127) or mm:ss (2:07)',
     )
     args = parser.parse_args()
 
@@ -105,6 +171,21 @@ def parse_args() -> argparse.Namespace:
             args.key = parse_key_string(args.key)
         except ValueError as e:
             parser.error(str(e))
+
+    # Validate --interval
+    if args.interval != 'all' and args.interval not in INTERVAL_TYPES:
+        parser.error(f"Unknown interval '{args.interval}'. Choose from: {', '.join(INTERVAL_TYPES)}, all")
+
+    # Parse --start and --end
+    try:
+        args.start_sec = parse_time(args.start) if args.start else None
+        args.end_sec = parse_time(args.end) if args.end else None
+    except ValueError as e:
+        parser.error(str(e))
+
+    if args.start_sec is not None and args.end_sec is not None:
+        if args.start_sec >= args.end_sec:
+            parser.error(f"--start ({args.start}) must be before --end ({args.end})")
 
     return args
 
@@ -271,6 +352,95 @@ def confirm_key(
         sys.exit(1)
 
 
+# ── Pitch Correction ──────────────────────────────────────────────────────────
+
+def build_scale_hz(key_name: str) -> list[float]:
+    """
+    Return Hz values for all scale degrees across the vocal range (C2-C6).
+    """
+    scale_pcs = build_scale_pitch_classes(key_name)
+    hz_targets = []
+    for octave_midi in range(24, 85, 12):  # C2 (24) through C6 (84)
+        for pc in scale_pcs:
+            midi = octave_midi + pc
+            if midi < MIN_HARMONY_MIDI or midi > MAX_HARMONY_MIDI:
+                continue
+            hz = 440.0 * (2.0 ** ((midi - 69) / 12.0))
+            hz_targets.append(hz)
+    return sorted(hz_targets)
+
+
+def find_nearest_scale_hz(hz: float, scale_hz: list[float]) -> float:
+    """Find the nearest Hz value in the scale target list."""
+    best = scale_hz[0]
+    best_dist = abs(1200 * np.log2(hz / best))
+    for target in scale_hz[1:]:
+        dist = abs(1200 * np.log2(hz / target))
+        if dist < best_dist:
+            best = target
+            best_dist = dist
+    return best
+
+
+def pitch_correct_vocals(
+    vocals_audio: np.ndarray,
+    sr: int,
+    note_events: list[tuple[float, float, int, float]],
+    key_name: str,
+    strength: float = PITCH_CORRECT_STRENGTH,
+) -> np.ndarray:
+    """
+    Frame-by-frame pitch correction using WORLD vocoder.
+    Decomposes audio into pitch (F0) + spectral envelope + aperiodicity,
+    corrects F0 toward scale degrees, then resynthesizes.
+    """
+    import pyworld as pw
+
+    scale_hz = build_scale_hz(key_name)
+    audio_f64 = vocals_audio.astype(np.float64)
+
+    # WORLD analysis: decompose into F0, spectral envelope, aperiodicity
+    f0, timeaxis = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1000.0)
+    sp = pw.cheaptrick(audio_f64, f0, timeaxis, sr)
+    ap = pw.d4c(audio_f64, f0, timeaxis, sr)
+
+    # Correct F0 frame-by-frame
+    corrected_f0 = f0.copy()
+    corrected_count = 0
+
+    for i in range(len(f0)):
+        if f0[i] < 1.0:
+            # Unvoiced frame — skip
+            continue
+
+        actual_hz = f0[i]
+        target_hz = find_nearest_scale_hz(actual_hz, scale_hz)
+
+        # Deviation in cents
+        deviation_cents = 1200.0 * np.log2(actual_hz / target_hz)
+
+        if abs(deviation_cents) < PITCH_CORRECT_THRESHOLD * 100:
+            continue
+
+        # Apply partial correction
+        correction_ratio = 2.0 ** ((-deviation_cents * strength) / 1200.0)
+        corrected_f0[i] = actual_hz * correction_ratio
+        corrected_count += 1
+
+    # Resynthesize with corrected F0
+    output = pw.synthesize(corrected_f0, sp, ap, sr)
+
+    # Match original length (WORLD may produce slightly different length)
+    if len(output) > len(vocals_audio):
+        output = output[:len(vocals_audio)]
+    elif len(output) < len(vocals_audio):
+        output = np.pad(output, (0, len(vocals_audio) - len(output)))
+
+    total_voiced = np.sum(f0 > 1.0)
+    print(f"  Corrected {corrected_count}/{total_voiced} voiced frames (strength: {strength:.0%})")
+    return output.astype(np.float32)
+
+
 # ── Step 3: Melody Extraction (Basic Pitch) ───────────────────────────────────
 
 def extract_melody(vocals_path: Path) -> list[tuple[float, float, int, float]]:
@@ -353,28 +523,33 @@ def is_in_scale(midi_pitch: int, scale_pcs: list[int]) -> bool:
     return (midi_pitch % 12) in scale_pcs
 
 
-def diatonic_third_above(midi_pitch: int, scale_pcs: list[int]) -> int:
+def diatonic_interval(midi_pitch: int, scale_pcs: list[int], degrees: int) -> int:
     """
-    Compute the MIDI pitch a diatonic third above the given pitch.
-    Assumes the pitch is in the scale.
+    Compute the MIDI pitch at a diatonic interval from the given pitch.
+    degrees: +2 = 3rd above, -2 = 3rd below, +4 = 5th above, +5 = 6th above
     """
     pc = midi_pitch % 12
     octave = midi_pitch // 12
 
     deg_idx = scale_pcs.index(pc)
 
-    # Third above = +2 diatonic steps
-    target_idx = (deg_idx + 2) % 7
+    target_idx = (deg_idx + degrees) % 7
     target_pc = scale_pcs[target_idx]
 
-    # Reconstruct MIDI pitch in the right octave (must be above original)
     target_midi = octave * 12 + target_pc
-    if target_midi <= midi_pitch:
-        target_midi += 12
 
-    # Vocal range clamping
-    if target_midi > MAX_HARMONY_MIDI:
-        target_midi -= 12
+    if degrees > 0:
+        # Interval above: result must be above original
+        if target_midi <= midi_pitch:
+            target_midi += 12
+        if target_midi > MAX_HARMONY_MIDI:
+            target_midi -= 12
+    else:
+        # Interval below: result must be below original
+        if target_midi >= midi_pitch:
+            target_midi -= 12
+        if target_midi < MIN_HARMONY_MIDI:
+            target_midi += 12
 
     return target_midi
 
@@ -382,13 +557,16 @@ def diatonic_third_above(midi_pitch: int, scale_pcs: list[int]) -> int:
 def generate_harmony(
     melody_notes: list[tuple[float, float, int, float]],
     key_name: str,
+    interval_type: str = '3rd-above',
 ) -> list[HarmonyNote]:
     """
-    Generate a diatonic third harmony for each melody note.
+    Generate a diatonic harmony for each melody note at the specified interval.
     Handles melismatic passages and chromatic notes.
     """
+    degrees = INTERVAL_DEGREES[interval_type]
     scale_pcs = build_scale_pitch_classes(key_name)
     is_major = "major" in key_name.lower()
+    going_up = degrees is None or degrees > 0
 
     harmony_notes = []
     prev_harmony_midi = None
@@ -396,25 +574,47 @@ def generate_harmony(
     for start, end, midi_pitch, velocity in melody_notes:
         duration = end - start
 
+        # Octave is a special case — always exactly +12 semitones
+        if interval_type == 'octave':
+            harmony_midi = midi_pitch + 12
+            if harmony_midi > MAX_HARMONY_MIDI:
+                harmony_midi -= 12
+            prev_harmony_midi = harmony_midi
+
         # Priority 1: Melismatic — very short notes, sustain previous harmony
-        if duration < MIN_NOTE_DURATION and prev_harmony_midi is not None:
+        elif duration < MIN_NOTE_DURATION and prev_harmony_midi is not None:
             harmony_midi = prev_harmony_midi
 
         # Priority 2: Chromatic + short — hold previous harmony
         elif not is_in_scale(midi_pitch, scale_pcs) and duration < CHROMATIC_HOLD_THRESHOLD and prev_harmony_midi is not None:
             harmony_midi = prev_harmony_midi
 
-        # Priority 3: Chromatic + sustained — fixed interval
+        # Priority 3: Chromatic + sustained — use interval-appropriate fixed shift
         elif not is_in_scale(midi_pitch, scale_pcs):
-            fixed_shift = 4 if is_major else 3  # major third or minor third
+            major_shift, minor_shift = CHROMATIC_FALLBACK[interval_type]
+            fixed_shift = major_shift if is_major else minor_shift
             harmony_midi = midi_pitch + fixed_shift
             if harmony_midi > MAX_HARMONY_MIDI:
                 harmony_midi -= 12
+            elif harmony_midi < MIN_HARMONY_MIDI:
+                harmony_midi += 12
             prev_harmony_midi = harmony_midi
 
-        # Priority 4: Diatonic — compute third above via scale degree arithmetic
+        # Priority 4: Diatonic — compute interval via scale degree arithmetic
         else:
-            harmony_midi = diatonic_third_above(midi_pitch, scale_pcs)
+            harmony_midi = diatonic_interval(midi_pitch, scale_pcs, degrees)
+
+            # Correct diminished/augmented intervals that sound bad
+            # (e.g. diminished 5th = tritone from 2nd degree of minor scale)
+            shift = harmony_midi - midi_pitch
+            safe_min, safe_max = INTERVAL_SAFE_RANGE[interval_type]
+            if shift < safe_min or shift > safe_max:
+                # Snap to nearest safe interval
+                if abs(shift - safe_min) <= abs(shift - safe_max):
+                    harmony_midi = midi_pitch + safe_min
+                else:
+                    harmony_midi = midi_pitch + safe_max
+
             prev_harmony_midi = harmony_midi
 
         semitone_shift = harmony_midi - midi_pitch
@@ -430,7 +630,7 @@ def generate_harmony(
     return harmony_notes
 
 
-# ── Step 5: Audio Rendering (pyrubberband) ────────────────────────────────────
+# ── Step 5: Audio Rendering (WORLD vocoder) ───────────────────────────────────
 
 def render_harmony(
     vocals_audio: np.ndarray,
@@ -438,45 +638,69 @@ def render_harmony(
     harmony_notes: list[HarmonyNote],
 ) -> np.ndarray:
     """
-    Pitch-shift segments of the vocal track to create the harmony audio.
+    Pitch-shift the vocal track using WORLD vocoder for formant-preserving rendering.
+    Analyzes the full track once, then builds a per-frame F0 target from harmony notes.
     Returns numpy array of the same length as vocals_audio.
     """
+    import pyworld as pw
+
+    audio_f64 = vocals_audio.astype(np.float64)
+
+    # WORLD analysis — run once on the full vocal track
+    f0, timeaxis = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1000.0)
+    sp = pw.cheaptrick(audio_f64, f0, timeaxis, sr)
+    ap = pw.d4c(audio_f64, f0, timeaxis, sr)
+
+    # Build a shifted F0 contour: only shift frames that fall within a harmony note
+    f0_shifted = np.zeros_like(f0)  # silence by default (unvoiced)
+
+    for hn in harmony_notes:
+        shift_ratio = 2.0 ** (hn.semitone_shift / 12.0)
+        pad_sec = SEGMENT_PAD_MS / 1000.0
+
+        for i in range(len(timeaxis)):
+            t = timeaxis[i]
+            if t < hn.start_time - pad_sec or t > hn.end_time + pad_sec:
+                continue
+            if f0[i] < 1.0:
+                continue  # unvoiced frame
+            # Only set if not already set by a previous note (first note wins)
+            if f0_shifted[i] < 1.0:
+                f0_shifted[i] = f0[i] * shift_ratio
+
+    # Synthesize with shifted F0 but original spectral envelope (formants preserved)
+    raw_output = pw.synthesize(f0_shifted, sp, ap, sr)
+
+    # Match original length
+    if len(raw_output) > len(vocals_audio):
+        raw_output = raw_output[:len(vocals_audio)]
+    elif len(raw_output) < len(vocals_audio):
+        raw_output = np.pad(raw_output, (0, len(vocals_audio) - len(raw_output)))
+
+    # Gate: only keep WORLD output during note segments, silence elsewhere.
+    # This removes wind/noise artifacts between notes.
     output = np.zeros_like(vocals_audio)
     crossfade_samples = int(CROSSFADE_MS / 1000.0 * sr)
     pad_samples = int(SEGMENT_PAD_MS / 1000.0 * sr)
 
     for hn in harmony_notes:
-        # Add padding around the note to capture natural attack/release
         start_sample = max(0, int(hn.start_time * sr) - pad_samples)
-        end_sample = min(len(vocals_audio), int(hn.end_time * sr) + pad_samples)
-
-        if end_sample - start_sample < MIN_SEGMENT_SAMPLES:
+        end_sample = min(len(output), int(hn.end_time * sr) + pad_samples)
+        seg_len = end_sample - start_sample
+        if seg_len < MIN_SEGMENT_SAMPLES:
             continue
 
-        segment = vocals_audio[start_sample:end_sample]
+        segment = raw_output[start_sample:end_sample].copy()
 
-        if hn.semitone_shift == 0:
-            output[start_sample:end_sample] = segment
-            continue
-
-        # Use rubberband with formant preservation for more natural vocal sound
-        shifted = pyrb.pitch_shift(
-            segment, sr, n_steps=hn.semitone_shift,
-            rbargs={"--formant": ""}
-        )
-
-        # Handle length mismatch (rubberband may return slightly different length)
-        actual_len = min(len(shifted), end_sample - start_sample)
-
-        # Apply crossfades at both ends to avoid clicks
-        cf = min(crossfade_samples, actual_len // 2)
+        # Crossfade at boundaries
+        cf = min(crossfade_samples, seg_len // 2)
         if cf > 0:
-            shifted[:cf] *= np.linspace(0, 1, cf)
-            shifted[actual_len - cf:actual_len] *= np.linspace(1, 0, cf)
+            segment[:cf] *= np.linspace(0, 1, cf)
+            segment[seg_len - cf:seg_len] *= np.linspace(1, 0, cf)
 
-        output[start_sample:start_sample + actual_len] = shifted[:actual_len]
+        output[start_sample:end_sample] = segment
 
-    return output
+    return output.astype(np.float32)
 
 
 # ── Step 6: Mix, Save, Cleanup ────────────────────────────────────────────────
@@ -487,25 +711,31 @@ def humanize_harmony(harmony_audio: np.ndarray, sr: int) -> np.ndarray:
     - Timing offset: shift the harmony slightly late
     - Micro-detuning: add a few cents of pitch variation (chorus effect)
     """
+    import pyworld as pw
+
     # 1. Timing offset — pad the beginning, trim the end
     offset_samples = int(TIMING_OFFSET_MS / 1000.0 * sr)
     delayed = np.zeros_like(harmony_audio)
     delayed[offset_samples:] = harmony_audio[:-offset_samples]
 
-    # 2. Micro-detuning — pitch shift by a few cents for chorus-like width
-    #    DETUNE_CENTS cents = DETUNE_CENTS/100 semitones
-    detuned = pyrb.pitch_shift(
-        delayed, sr, n_steps=DETUNE_CENTS / 100.0,
-        rbargs={"--formant": ""}
-    )
+    # 2. Micro-detuning via WORLD — shift F0 by a few cents
+    audio_f64 = delayed.astype(np.float64)
+    f0, t = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1500.0)
+    sp = pw.cheaptrick(audio_f64, f0, t, sr)
+    ap = pw.d4c(audio_f64, f0, t, sr)
 
-    # Match length (rubberband may slightly change it)
+    detune_ratio = 2.0 ** (DETUNE_CENTS / 1200.0)
+    f0_detuned = f0 * detune_ratio
+
+    detuned = pw.synthesize(f0_detuned, sp, ap, sr)
+
+    # Match length
     if len(detuned) > len(harmony_audio):
         detuned = detuned[:len(harmony_audio)]
     elif len(detuned) < len(harmony_audio):
         detuned = np.pad(detuned, (0, len(harmony_audio) - len(detuned)))
 
-    return detuned
+    return detuned.astype(np.float32)
 
 
 def mix_and_save(
@@ -514,6 +744,7 @@ def mix_and_save(
     sr: int,
     input_path: Path,
     harmony_volume: float,
+    interval_label: str = '',
 ) -> tuple[Path, Path]:
     """
     Save harmony-only (mono) and mixed (stereo) WAV files.
@@ -523,8 +754,9 @@ def mix_and_save(
     stem = input_path.stem
     output_dir = input_path.parent
 
-    harmony_path = output_dir / f"{stem}_harmony.wav"
-    mixed_path = output_dir / f"{stem}_mixed.wav"
+    suffix = f"_{interval_label}" if interval_label else ""
+    harmony_path = output_dir / f"{stem}{suffix}_harmony.wav"
+    mixed_path = output_dir / f"{stem}{suffix}_mixed.wav"
 
     # Humanize the harmony (timing offset + micro-detuning)
     harmony_humanized = humanize_harmony(harmony_audio, sr)
@@ -580,13 +812,13 @@ def main():
     tmp_dir = Path(tempfile.mkdtemp(prefix="harmoneez_"))
 
     try:
-        # Step 1: Isolate vocals
-        print("Step 1/6: Isolating vocals (this may take ~1 minute)...")
+        # Step 1: Isolate vocals (runs on full song)
+        print("Step 1: Isolating vocals (this may take ~1 minute)...")
         vocals_audio, sr = separate_vocals(input_path, tmp_dir)
         print(f"  Done. Vocal track: {len(vocals_audio) / sr:.1f}s at {sr}Hz")
 
-        # Step 2: Detect key
-        print("Step 2/6: Detecting song key...")
+        # Step 2: Detect key (runs on full song)
+        print("Step 2: Detecting song key...")
         detected_key, confidence, top_3 = detect_key(vocals_audio, sr)
 
         has_key_change = detect_key_changes(vocals_audio, sr, detected_key)
@@ -597,32 +829,67 @@ def main():
         confirmed_key = confirm_key(detected_key, confidence, top_3, args.key)
         print(f"  Using key: {confirmed_key}")
 
-        # Step 3: Extract melody
-        print("Step 3/6: Extracting melody notes...")
+        # Step 3: Crop to section (if --start / --end specified)
         vocals_path = tmp_dir / "vocals.wav"
+        if args.start_sec is not None or args.end_sec is not None:
+            song_duration = len(vocals_audio) / sr
+            start_sample = int(args.start_sec * sr) if args.start_sec else 0
+            end_sample = int(args.end_sec * sr) if args.end_sec else len(vocals_audio)
+
+            if end_sample > len(vocals_audio):
+                print(f"  Warning: --end exceeds song duration ({song_duration:.1f}s). Using end of song.")
+                end_sample = len(vocals_audio)
+
+            vocals_audio = vocals_audio[start_sample:end_sample]
+            sf.write(str(vocals_path), vocals_audio, sr)
+
+            start_fmt = args.start or "0:00"
+            end_fmt = args.end or f"{song_duration:.0f}"
+            print(f"  Cropped to section: {start_fmt} – {end_fmt} ({len(vocals_audio) / sr:.1f}s)")
+
+        # Step 4: Pitch correction
+        if not args.no_pitch_correct:
+            print("Step 3: Correcting vocal pitch...")
+            # Extract melody from raw vocal first (needed for correction targets)
+            raw_melody = extract_melody(vocals_path)
+            print(f"  Detected {len(raw_melody)} notes in raw vocal.")
+            vocals_audio = pitch_correct_vocals(vocals_audio, sr, raw_melody, confirmed_key)
+            # Save corrected vocal
+            corrected_path = input_path.parent / f"{input_path.stem}_corrected.wav"
+            sf.write(str(corrected_path), vocals_audio, sr)
+            print(f"  Saved corrected vocal: {corrected_path}")
+            # Re-save for Basic Pitch to re-extract from corrected audio
+            sf.write(str(vocals_path), vocals_audio, sr)
+
+        # Step 5: Extract melody (from corrected vocal if applicable)
+        print("Step 4: Extracting melody notes...")
         melody_notes = extract_melody(vocals_path)
         print(f"  Done. Found {len(melody_notes)} notes.")
 
-        # Step 4: Generate harmony
-        print("Step 4/6: Generating diatonic third harmony...")
-        harmony_notes = generate_harmony(melody_notes, confirmed_key)
-        print(f"  Done. Generated {len(harmony_notes)} harmony notes.")
+        # Step 5: Generate + render + save for each interval
+        intervals = INTERVAL_TYPES if args.interval == 'all' else [args.interval]
+        output_files = []
 
-        # Step 5: Render harmony audio
-        print("Step 5/6: Rendering harmony audio (pitch-shifting segments)...")
-        harmony_audio = render_harmony(vocals_audio, sr, harmony_notes)
-        print("  Done.")
+        for interval_type in intervals:
+            print(f"Step 4: Generating {interval_type} harmony...")
+            harmony_notes = generate_harmony(melody_notes, confirmed_key, interval_type)
 
-        # Step 6: Mix and save
-        print("Step 6/6: Mixing and saving output files...")
-        harmony_path, mixed_path = mix_and_save(
-            vocals_audio, harmony_audio, sr, input_path, args.harmony_volume
-        )
+            print(f"  Rendering audio...")
+            harmony_audio = render_harmony(vocals_audio, sr, harmony_notes)
+
+            print(f"  Saving files...")
+            harmony_path, mixed_path = mix_and_save(
+                vocals_audio, harmony_audio, sr, input_path,
+                args.harmony_volume, interval_type,
+            )
+            output_files.append((interval_type, harmony_path, mixed_path))
 
         elapsed = time.time() - start_time
         print(f"\nComplete! ({elapsed:.1f}s)")
-        print(f"  Harmony only: {harmony_path}")
-        print(f"  Mixed output: {mixed_path}")
+        for interval_type, harmony_path, mixed_path in output_files:
+            print(f"  [{interval_type}]")
+            print(f"    Harmony: {harmony_path}")
+            print(f"    Mixed:   {mixed_path}")
 
     except KeyboardInterrupt:
         print("\nCancelled by user.")
