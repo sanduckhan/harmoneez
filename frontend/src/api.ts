@@ -57,3 +57,16 @@ export async function downloadZip(jobId: string, intervals: string[]): Promise<v
 export function audioUrl(jobId: string): string {
   return `${BASE}/api/audio/${jobId}`;
 }
+
+export interface PitchFrame {
+  time: number;
+  actual_hz: number | null;
+  target_hz: number | null;
+  deviation_cents: number | null;
+}
+
+export async function getPitchData(jobId: string): Promise<PitchFrame[]> {
+  const res = await fetch(`${BASE}/api/pitch-data/${jobId}`);
+  if (!res.ok) return [];
+  return res.json();
+}

@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { motion } from 'motion/react';
 import type { PipelineResult } from '../types';
 import { IntervalCard } from './IntervalCard';
 import { downloadZip } from '../api';
@@ -12,6 +13,7 @@ export function ResultsGrid({ jobId, result }: Props) {
   const [playingInterval, setPlayingInterval] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
+  const [withBacking, setWithBacking] = useState(false);
 
   const handlePlay = useCallback((interval: string) => {
     setPlayingInterval(interval);
@@ -45,46 +47,83 @@ export function ResultsGrid({ jobId, result }: Props) {
   };
 
   return (
-    <div className="space-y-4">
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="space-y-4"
+    >
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-medium">Results</h2>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <div className="w-2 h-2 rounded-full bg-[var(--teal)] shadow-[0_0_6px_var(--teal)]" />
+          <h2 className="text-sm font-mono uppercase tracking-widest text-[var(--text-secondary)]">
+            Harmonies
+          </h2>
+        </div>
+        <div className="flex items-center gap-4">
+          {/* Instrumental backing toggle */}
+          {result.instrumental_url && (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)]">
+                With Band
+              </span>
+              <button
+                onClick={() => setWithBacking(!withBacking)}
+                className={`
+                  relative w-10 h-5 rounded-full transition-all duration-200
+                  ${withBacking
+                    ? 'bg-[var(--amber)] shadow-[0_0_8px_var(--amber-glow)]'
+                    : 'bg-[var(--bg-surface)] border border-[var(--border-highlight)]'}
+                `}
+              >
+                <div className={`
+                  absolute top-0.5 w-4 h-4 rounded-full transition-all duration-200
+                  ${withBacking
+                    ? 'left-[22px] bg-[var(--bg-deep)]'
+                    : 'left-0.5 bg-[var(--text-muted)]'}
+                `} />
+              </button>
+            </label>
+          )}
+
           <button
             onClick={selectAll}
-            className="text-xs text-purple-400 hover:text-purple-300"
+            className="text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors"
           >
-            Select all
+            Select All
           </button>
           <button
             onClick={handleDownload}
             disabled={selected.size === 0 || downloading}
             className={`
-              px-4 py-1.5 rounded text-sm font-medium transition-colors
+              px-4 py-1.5 rounded text-xs font-mono uppercase tracking-wider transition-all
               ${selected.size > 0
-                ? 'bg-purple-600 hover:bg-purple-500'
-                : 'bg-gray-700 text-gray-500 cursor-not-allowed'}
+                ? 'bg-[var(--amber)] text-[var(--bg-deep)] font-semibold hover:shadow-[0_0_12px_var(--amber-glow)]'
+                : 'bg-[var(--bg-surface)] text-[var(--text-muted)] border border-[var(--border)] cursor-not-allowed'}
             `}
           >
-            {downloading ? 'Downloading...' : `Download (${selected.size})`}
+            {downloading ? 'Exporting...' : `Export ${selected.size > 0 ? `(${selected.size})` : ''}`}
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {result.files.map((f) => (
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+        {result.files.map((f, i) => (
           <IntervalCard
             key={f.interval}
             interval={f.interval}
             harmonyUrl={f.harmony_url}
             mixedUrl={f.mixed_url}
+            instrumentalUrl={result.instrumental_url}
+            withBacking={withBacking}
             isPlaying={playingInterval === f.interval}
             isSelected={selected.has(f.interval)}
             onPlay={handlePlay}
             onStop={handleStop}
             onSelect={handleSelect}
+            index={i}
           />
         ))}
       </div>
-    </div>
+    </motion.div>
   );
 }

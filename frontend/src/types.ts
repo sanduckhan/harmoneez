@@ -32,6 +32,8 @@ export interface PipelineResult {
   has_key_change: boolean;
   corrected_path: string | null;
   corrected_url?: string;
+  instrumental_path?: string;
+  instrumental_url?: string;
   files: IntervalFile[];
 }
 

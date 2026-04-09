@@ -80,9 +80,9 @@ def run_pipeline(
 
     total_steps = 4 + len(interval_list)  # separate + key + correct + melody + N intervals
 
-    # Step 1: Isolate vocals
+    # Step 1: Isolate vocals + instrumental
     progress("separating", "Isolating vocals...", 1, total_steps)
-    vocals_audio, sr = separate_vocals(input_path, tmp_dir)
+    vocals_audio, instrumental_audio, sr = separate_vocals(input_path, tmp_dir)
     progress("separating", f"Vocal track: {len(vocals_audio) / sr:.1f}s at {sr}Hz", 1, total_steps)
 
     # Step 2: Detect key (skip if already provided)
@@ -108,19 +108,33 @@ def run_pipeline(
         end_sample = int(end * sr) if end else len(vocals_audio)
         end_sample = min(end_sample, len(vocals_audio))
         vocals_audio = vocals_audio[start_sample:end_sample]
+        instrumental_audio = instrumental_audio[start_sample:end_sample]
         sf.write(str(vocals_path), vocals_audio, sr)
+        sf.write(str(tmp_dir / "instrumental.wav"), instrumental_audio, sr)
+
+    # Save instrumental to output dir
+    instrumental_path = (output_dir or input_path.parent) / f"{input_path.stem}_instrumental.wav"
+    sf.write(str(instrumental_path), instrumental_audio, sr)
 
     # Step 3: Pitch correction
     corrected_path = None
+    pitch_data_path = None
     if pitch_correct:
         progress("pitch_correcting", "Correcting vocal pitch...", 3, total_steps)
         raw_melody = extract_melody(vocals_path)
-        vocals_audio, corrected_count, total_voiced = pitch_correct_vocals(
+        vocals_audio, corrected_count, total_voiced, pitch_frames = pitch_correct_vocals(
             vocals_audio, sr, raw_melody, confirmed_key
         )
         corrected_path = (output_dir or input_path.parent) / f"{input_path.stem}_corrected.wav"
         sf.write(str(corrected_path), vocals_audio, sr)
         sf.write(str(vocals_path), vocals_audio, sr)
+
+        # Save pitch data as JSON
+        import json
+        pitch_data_path = tmp_dir / "pitch_data.json"
+        with open(pitch_data_path, 'w') as f:
+            json.dump(pitch_frames, f)
+
         progress("pitch_correcting", f"Corrected {corrected_count}/{total_voiced} frames", 3, total_steps)
 
     # Step 4: Extract melody
@@ -158,5 +172,7 @@ def run_pipeline(
         'candidates': candidates,
         'has_key_change': has_key_change,
         'corrected_path': str(corrected_path) if corrected_path else None,
+        'instrumental_path': str(instrumental_path),
+        'pitch_data_path': str(pitch_data_path) if pitch_data_path else None,
         'files': output_files,
     }

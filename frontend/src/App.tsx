@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import type { KeyDetectionResult, PipelineResult } from './types';
-import { uploadFile, detectKey, startProcessing, audioUrl } from './api';
+import { uploadFile, detectKey, startProcessing, audioUrl, getPitchData } from './api';
+import type { PitchFrame } from './api';
 import { useJobProgress } from './hooks/useJobProgress';
 import { UploadZone } from './components/UploadZone';
 import { WaveformPlayer } from './components/WaveformPlayer';
@@ -26,6 +28,7 @@ function App() {
   const progress = useJobProgress(jobId, processing);
 
   const [result, setResult] = useState<PipelineResult | null>(null);
+  const [pitchData, setPitchData] = useState<PitchFrame[]>([]);
 
   const handleUpload = useCallback(async (file: File) => {
     setUploading(true);
@@ -72,51 +75,110 @@ function App() {
     if (progress?.status === 'completed' && progress.result && !result) {
       setResult(progress.result);
       setProcessing(false);
+      // Fetch pitch data
+      if (jobId) {
+        getPitchData(jobId).then(setPitchData);
+      }
     }
     if (progress?.status === 'failed' && processing) {
       setProcessing(false);
     }
   }, [progress]);
 
+  const resetAll = () => {
+    setJobId(null);
+    setFilename(null);
+    setKeyInfo(null);
+    setResult(null);
+    setProcessing(false);
+    setRegionStart(null);
+    setRegionEnd(null);
+    setPitchData([]);
+  };
+
   return (
-    <div className="min-h-screen bg-gray-900">
-      <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
-        <div className="text-center">
-          <h1 className="text-3xl font-bold text-white">Harmoneez</h1>
-          <p className="text-gray-400 mt-1">Vocal harmony generator for rock bands</p>
-        </div>
+    <div className="min-h-screen bg-[var(--bg-deep)]">
+      {/* Subtle top glow */}
+      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-[200px] bg-[var(--amber)] opacity-[0.02] blur-[100px] pointer-events-none" />
 
-        {!jobId && (
-          <UploadZone onUpload={handleUpload} disabled={uploading} />
-        )}
+      <div className="relative max-w-4xl mx-auto px-4 py-10 space-y-6">
+        {/* Header */}
+        <motion.header
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-end justify-between mb-4"
+        >
+          <div>
+            <h1 className="text-3xl tracking-tight" style={{ fontFamily: "'Instrument Serif', serif" }}>
+              <span className="text-[var(--text-primary)]">Harmon</span>
+              <span className="text-[var(--amber)]">eez</span>
+            </h1>
+            <p className="text-[10px] font-mono uppercase tracking-[0.25em] text-[var(--text-muted)] mt-1">
+              Vocal Harmony Generator
+            </p>
+          </div>
+          {jobId && (
+            <button
+              onClick={resetAll}
+              className="text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors pb-1"
+            >
+              New Session
+            </button>
+          )}
+        </motion.header>
 
-        {uploading && (
-          <p className="text-center text-gray-400">Uploading and detecting key...</p>
-        )}
+        {/* Divider */}
+        <div className="h-px bg-gradient-to-r from-transparent via-[var(--border-highlight)] to-transparent" />
 
+        <AnimatePresence mode="wait">
+          {/* Upload state */}
+          {!jobId && !uploading && (
+            <UploadZone key="upload" onUpload={handleUpload} />
+          )}
+
+          {/* Loading state */}
+          {uploading && (
+            <motion.div
+              key="uploading"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex items-center justify-center gap-3 py-16"
+            >
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
+                className="w-5 h-5 border-2 border-[var(--amber)] border-t-transparent rounded-full"
+              />
+              <span className="text-sm font-mono text-[var(--text-secondary)]">
+                Analyzing track...
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Work area */}
         {jobId && !uploading && (
-          <>
-            <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg">
-              <span className="text-sm text-gray-300">{filename}</span>
-              <button
-                onClick={() => {
-                  setJobId(null);
-                  setFilename(null);
-                  setKeyInfo(null);
-                  setResult(null);
-                  setProcessing(false);
-                  setRegionStart(null);
-                  setRegionEnd(null);
-                }}
-                className="text-xs text-gray-500 hover:text-gray-300"
-              >
-                Upload different file
-              </button>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="space-y-4"
+          >
+            {/* File info bar */}
+            <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--border)]">
+              <div className="w-2 h-2 rounded-full bg-[var(--teal)] shadow-[0_0_4px_var(--teal)]" />
+              <span className="text-xs font-mono text-[var(--text-secondary)] truncate flex-1">{filename}</span>
+              {keyInfo && (
+                <span className="text-xs font-mono text-[var(--amber)]">
+                  {keyInfo.key}
+                </span>
+              )}
             </div>
 
             <WaveformPlayer
               audioUrl={audioUrl(jobId)}
               onRegionChange={handleRegionChange}
+              pitchData={pitchData}
             />
 
             <SettingsPanel
@@ -131,14 +193,16 @@ function App() {
               regionEnd={regionEnd}
             />
 
+            {/* Generate button */}
             <button
               onClick={handleGenerate}
               disabled={processing}
               className={`
-                w-full py-3 rounded-lg text-lg font-semibold transition-colors
+                w-full py-3.5 rounded-lg text-sm font-mono uppercase tracking-widest
+                transition-all duration-300
                 ${processing
-                  ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
-                  : 'bg-purple-600 hover:bg-purple-500 text-white'}
+                  ? 'bg-[var(--bg-surface)] text-[var(--text-muted)] border border-[var(--border)] cursor-not-allowed'
+                  : 'bg-[var(--amber)] text-[var(--bg-deep)] font-bold hover:shadow-[0_0_30px_var(--amber-glow)] hover:brightness-110'}
               `}
             >
               {processing ? 'Processing...' : 'Generate Harmonies'}
@@ -147,8 +211,14 @@ function App() {
             {processing && <ProgressPanel progress={progress} />}
 
             {result && <ResultsGrid jobId={jobId} result={result} />}
-          </>
+          </motion.div>
         )}
+
+        {/* Footer */}
+        <div className="h-px bg-gradient-to-r from-transparent via-[var(--border)] to-transparent mt-8" />
+        <p className="text-center text-[10px] font-mono text-[var(--text-muted)] tracking-wider pb-4">
+          HARMONEEZ v0.3
+        </p>
       </div>
     </div>
   );

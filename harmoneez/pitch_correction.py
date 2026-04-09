@@ -41,10 +41,11 @@ def pitch_correct_vocals(
     note_events: list[tuple[float, float, int, float]],
     key_name: str,
     strength: float = PITCH_CORRECT_STRENGTH,
-) -> tuple[np.ndarray, int, int]:
+) -> tuple[np.ndarray, int, int, list[dict]]:
     """
     Frame-by-frame pitch correction using WORLD vocoder.
-    Returns (corrected_audio, corrected_count, total_voiced).
+    Returns (corrected_audio, corrected_count, total_voiced, pitch_frames).
+    pitch_frames is a list of dicts with time, actual_hz, target_hz, deviation_cents.
     """
     import pyworld as pw
 
@@ -57,15 +58,26 @@ def pitch_correct_vocals(
 
     corrected_f0 = f0.copy()
     corrected_count = 0
+    pitch_frames = []
 
     for i in range(len(f0)):
+        frame = {"time": float(timeaxis[i])}
+
         if f0[i] < 1.0:
+            frame["actual_hz"] = None
+            frame["target_hz"] = None
+            frame["deviation_cents"] = None
+            pitch_frames.append(frame)
             continue
 
         actual_hz = f0[i]
         target_hz = find_nearest_scale_hz(actual_hz, scale_hz)
-
         deviation_cents = 1200.0 * np.log2(actual_hz / target_hz)
+
+        frame["actual_hz"] = round(float(actual_hz), 1)
+        frame["target_hz"] = round(float(target_hz), 1)
+        frame["deviation_cents"] = round(float(deviation_cents), 1)
+        pitch_frames.append(frame)
 
         if abs(deviation_cents) < PITCH_CORRECT_THRESHOLD * 100:
             continue
@@ -82,4 +94,4 @@ def pitch_correct_vocals(
         output = np.pad(output, (0, len(vocals_audio) - len(output)))
 
     total_voiced = int(np.sum(f0 > 1.0))
-    return output.astype(np.float32), corrected_count, total_voiced
+    return output.astype(np.float32), corrected_count, total_voiced, pitch_frames

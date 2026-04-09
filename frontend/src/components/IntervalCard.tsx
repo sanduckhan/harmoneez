@@ -1,45 +1,53 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
+import { motion } from 'motion/react';
 
 interface Props {
   interval: string;
   harmonyUrl: string;
   mixedUrl: string;
+  instrumentalUrl?: string;
+  withBacking?: boolean;
   isPlaying: boolean;
   isSelected: boolean;
   onPlay: (interval: string) => void;
   onStop: () => void;
   onSelect: (interval: string, selected: boolean) => void;
+  index: number;
 }
 
-const INTERVAL_LABELS: Record<string, string> = {
-  '3rd-above': '3rd Above',
-  '3rd-below': '3rd Below',
-  '5th': '5th',
-  '6th': '6th',
-  'octave': 'Octave',
-  'unison': 'Unison',
-  'drone-root': 'Drone (Root)',
-  'drone-5th': 'Drone (5th)',
+const INTERVAL_META: Record<string, { label: string; shortLabel: string; description: string }> = {
+  '3rd-above': { label: '3rd Above', shortLabel: '3', description: 'Classic harmony' },
+  '3rd-below': { label: '3rd Below', shortLabel: '3', description: 'Lower harmony' },
+  '5th': { label: '5th', shortLabel: '5', description: 'Power harmony' },
+  '6th': { label: '6th', shortLabel: '6', description: 'Wide interval' },
+  'octave': { label: 'Octave', shortLabel: '8', description: 'Doubling up' },
+  'unison': { label: 'Unison', shortLabel: 'U', description: 'Vocal thickener' },
+  'drone-root': { label: 'Drone Root', shortLabel: 'DR', description: 'Hold root note' },
+  'drone-5th': { label: 'Drone 5th', shortLabel: 'D5', description: 'Hold 5th note' },
 };
 
 export function IntervalCard({
-  interval, harmonyUrl, mixedUrl,
-  isPlaying, isSelected, onPlay, onStop, onSelect,
+  interval, harmonyUrl, mixedUrl, instrumentalUrl, withBacking,
+  isPlaying, isSelected, onPlay, onStop, onSelect, index,
 }: Props) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const backingRef = useRef<HTMLAudioElement | null>(null);
   const [mode, setMode] = useState<'mixed' | 'harmony'>('mixed');
+  const meta = INTERVAL_META[interval] || { label: interval, shortLabel: '?', description: '' };
 
-  // Stop audio when another card starts playing
   useEffect(() => {
-    if (!isPlaying && audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
+    if (!isPlaying) {
+      audioRef.current?.pause();
+      if (audioRef.current) audioRef.current.currentTime = 0;
+      backingRef.current?.pause();
+      if (backingRef.current) backingRef.current.currentTime = 0;
     }
   }, [isPlaying]);
 
   const handlePlay = useCallback(() => {
     if (isPlaying) {
       audioRef.current?.pause();
+      backingRef.current?.pause();
       onStop();
     } else {
       onPlay(interval);
@@ -48,8 +56,25 @@ export function IntervalCard({
         audioRef.current.src = url;
         audioRef.current.play();
       }
+      if (withBacking && instrumentalUrl && backingRef.current) {
+        backingRef.current.src = instrumentalUrl;
+        backingRef.current.play();
+      }
     }
-  }, [isPlaying, interval, mode, mixedUrl, harmonyUrl, onPlay, onStop]);
+  }, [isPlaying, interval, mode, mixedUrl, harmonyUrl, instrumentalUrl, withBacking, onPlay, onStop]);
+
+  // Sync backing when withBacking changes during playback
+  useEffect(() => {
+    if (isPlaying && backingRef.current) {
+      if (withBacking && instrumentalUrl) {
+        backingRef.current.src = instrumentalUrl;
+        backingRef.current.currentTime = audioRef.current?.currentTime || 0;
+        backingRef.current.play();
+      } else {
+        backingRef.current.pause();
+      }
+    }
+  }, [withBacking]);
 
   const handleModeSwitch = useCallback((newMode: 'mixed' | 'harmony') => {
     setMode(newMode);
@@ -62,60 +87,78 @@ export function IntervalCard({
   }, [isPlaying, mixedUrl, harmonyUrl]);
 
   return (
-    <div className={`
-      p-4 rounded-lg border transition-all
-      ${isPlaying ? 'border-purple-500 bg-purple-500/10' : 'border-gray-700 bg-gray-800/50'}
-      ${isSelected ? 'ring-2 ring-purple-400' : ''}
-    `}>
-      <audio
-        ref={audioRef}
-        onEnded={onStop}
-        preload="none"
-      />
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.05 }}
+      className={`
+        relative rounded-lg border transition-all duration-200
+        ${isPlaying
+          ? 'border-[var(--amber)] bg-[var(--amber-glow)] shadow-[0_0_20px_var(--amber-glow)]'
+          : 'border-[var(--border)] bg-[var(--bg-panel)] hover:border-[var(--border-highlight)]'}
+        ${isSelected ? 'ring-1 ring-[var(--amber)]/50' : ''}
+      `}
+    >
+      <audio ref={audioRef} onEnded={onStop} preload="none" />
+      <audio ref={backingRef} preload="none" />
 
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="font-medium text-sm">
-          {INTERVAL_LABELS[interval] || interval}
-        </h3>
-        <label className="flex items-center gap-1.5">
-          <input
-            type="checkbox"
-            checked={isSelected}
-            onChange={(e) => onSelect(interval, e.target.checked)}
-            className="rounded"
-          />
-          <span className="text-xs text-gray-400">Select</span>
-        </label>
+      {/* Header */}
+      <div className="flex items-start justify-between p-3 pb-0">
+        <div>
+          <h3 className="font-mono text-sm font-semibold text-[var(--text-primary)]">
+            {meta.label}
+          </h3>
+          <p className="text-[10px] text-[var(--text-muted)] mt-0.5">{meta.description}</p>
+        </div>
+        <input
+          type="checkbox"
+          checked={isSelected}
+          onChange={(e) => onSelect(interval, e.target.checked)}
+          className="mt-0.5"
+        />
       </div>
 
-      <div className="flex items-center gap-2">
+      {/* Controls */}
+      <div className="flex items-center gap-2 p-3">
         <button
           onClick={handlePlay}
           className={`
-            px-3 py-1.5 rounded text-sm font-medium transition-colors
+            flex items-center justify-center w-8 h-8 rounded transition-all
             ${isPlaying
-              ? 'bg-purple-600 hover:bg-purple-500'
-              : 'bg-gray-700 hover:bg-gray-600'}
+              ? 'bg-[var(--amber)] text-[var(--bg-deep)]'
+              : 'bg-[var(--bg-surface)] border border-[var(--border-highlight)] hover:border-[var(--amber)]/50 text-[var(--text-secondary)]'}
           `}
         >
-          {isPlaying ? 'Stop' : 'Play'}
+          {isPlaying ? (
+            <span className="w-3 h-3 border-l-2 border-r-2 border-current" />
+          ) : (
+            <span className="w-0 h-0 ml-0.5 border-l-[7px] border-l-current border-y-[5px] border-y-transparent" />
+          )}
         </button>
 
-        <div className="flex bg-gray-700 rounded text-xs overflow-hidden">
+        <div className="flex bg-[var(--bg-surface)] rounded border border-[var(--border)] text-[10px] font-mono overflow-hidden">
           <button
             onClick={() => handleModeSwitch('mixed')}
-            className={`px-2 py-1 transition-colors ${mode === 'mixed' ? 'bg-purple-600' : 'hover:bg-gray-600'}`}
+            className={`px-2.5 py-1 transition-all ${
+              mode === 'mixed'
+                ? 'bg-[var(--amber)] text-[var(--bg-deep)] font-semibold'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+            }`}
           >
-            Mixed
+            MIX
           </button>
           <button
             onClick={() => handleModeSwitch('harmony')}
-            className={`px-2 py-1 transition-colors ${mode === 'harmony' ? 'bg-purple-600' : 'hover:bg-gray-600'}`}
+            className={`px-2.5 py-1 transition-all ${
+              mode === 'harmony'
+                ? 'bg-[var(--amber)] text-[var(--bg-deep)] font-semibold'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+            }`}
           >
-            Harmony
+            SOLO
           </button>
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 }

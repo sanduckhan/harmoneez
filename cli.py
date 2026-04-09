@@ -101,7 +101,7 @@ def main():
         # Quick key detection on the uploaded file
         print("Detecting key...")
         tmp_dir = Path(tempfile.mkdtemp(prefix="harmoneez_key_"))
-        vocals_audio, sr = separate_vocals(Path(args.input_file), tmp_dir)
+        vocals_audio, _, sr = separate_vocals(Path(args.input_file), tmp_dir)
         detected_key, confidence, top_3 = detect_key(vocals_audio, sr)
 
         has_key_change = detect_key_changes(vocals_audio, sr, detected_key)

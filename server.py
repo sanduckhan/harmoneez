@@ -245,6 +245,10 @@ async def _run_pipeline(job: Job):
                 corr_name = Path(result["corrected_path"]).name
                 result["corrected_url"] = f"/api/files/{job.id}/{corr_name}"
 
+            if result.get("instrumental_path"):
+                inst_name = Path(result["instrumental_path"]).name
+                result["instrumental_url"] = f"/api/files/{job.id}/{inst_name}"
+
             job.result = result
             job.status = "completed"
         except Exception as e:
@@ -267,6 +271,22 @@ async def get_results(job_id: str):
         "result": job.result,
         "error": job.error,
     }
+
+
+@app.get("/api/pitch-data/{job_id}")
+async def get_pitch_data(job_id: str):
+    """Serve pitch accuracy data as JSON."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    pitch_file = job.tmp_dir / "pitch_data.json"
+    if not pitch_file.is_file():
+        raise HTTPException(status_code=404, detail="Pitch data not available")
+
+    import json
+    with open(pitch_file) as f:
+        return json.load(f)
 
 
 @app.get("/api/files/{job_id}/{filename}")
