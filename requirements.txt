@@ -1,0 +1,8 @@
+demucs>=4.0
+basic-pitch>=0.3,<0.4
+essentia>=2.1b6
+music21>=9.1
+pyrubberband>=0.3
+pydub>=0.25
+soundfile>=0.12
+numpy>=1.24,<2
