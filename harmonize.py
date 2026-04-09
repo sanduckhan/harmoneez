@@ -29,13 +29,16 @@ from music21 import key as m21key, pitch as m21pitch
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-INTERVAL_TYPES = ['3rd-above', '3rd-below', '5th', '6th', 'octave']
+INTERVAL_TYPES = ['3rd-above', '3rd-below', '5th', '6th', 'octave', 'unison', 'drone-root', 'drone-5th']
 INTERVAL_DEGREES = {
     '3rd-above': +2,
     '3rd-below': -2,
     '5th': +4,
     '6th': +5,
     'octave': None,  # special case: always +12 semitones
+    'unison': None,   # special case: 0 semitones (doubling)
+    'drone-root': None,  # special case: hold root of key
+    'drone-5th': None,   # special case: hold 5th of key
 }
 
 # Chromatic fallback: fixed semitone shift when note is outside the key
@@ -554,6 +557,38 @@ def diatonic_interval(midi_pitch: int, scale_pcs: list[int], degrees: int) -> in
     return target_midi
 
 
+def get_drone_midi(midi_pitch: int, key_name: str, drone_type: str) -> int:
+    """
+    Get the nearest drone target MIDI note (root or 5th of the key)
+    in the same octave range as the melody note.
+    """
+    parts = key_name.split()
+    tonic = parts[0]
+    # Convert tonic name to pitch class
+    from music21 import pitch as _p
+    tonic_pc = _p.Pitch(tonic).midi % 12
+
+    if drone_type == 'drone-5th':
+        # 5th is 7 semitones above the root
+        target_pc = (tonic_pc + 7) % 12
+    else:
+        target_pc = tonic_pc
+
+    # Find the nearest instance of this pitch class to the melody note
+    octave = midi_pitch // 12
+    target_midi = octave * 12 + target_pc
+    # Pick the closest octave (could be current, above, or below)
+    candidates = [target_midi - 12, target_midi, target_midi + 12]
+    target_midi = min(candidates, key=lambda m: abs(m - midi_pitch))
+
+    if target_midi > MAX_HARMONY_MIDI:
+        target_midi -= 12
+    elif target_midi < MIN_HARMONY_MIDI:
+        target_midi += 12
+
+    return target_midi
+
+
 def generate_harmony(
     melody_notes: list[tuple[float, float, int, float]],
     key_name: str,
@@ -574,8 +609,16 @@ def generate_harmony(
     for start, end, midi_pitch, velocity in melody_notes:
         duration = end - start
 
-        # Octave is a special case — always exactly +12 semitones
-        if interval_type == 'octave':
+        # Unison — same pitch, humanization makes it sound like a second singer
+        if interval_type == 'unison':
+            harmony_midi = midi_pitch
+
+        # Drone — hold the root or 5th of the key regardless of melody
+        elif interval_type in ('drone-root', 'drone-5th'):
+            harmony_midi = get_drone_midi(midi_pitch, key_name, interval_type)
+
+        # Octave — always exactly +12 semitones
+        elif interval_type == 'octave':
             harmony_midi = midi_pitch + 12
             if harmony_midi > MAX_HARMONY_MIDI:
                 harmony_midi -= 12
@@ -605,11 +648,9 @@ def generate_harmony(
             harmony_midi = diatonic_interval(midi_pitch, scale_pcs, degrees)
 
             # Correct diminished/augmented intervals that sound bad
-            # (e.g. diminished 5th = tritone from 2nd degree of minor scale)
             shift = harmony_midi - midi_pitch
             safe_min, safe_max = INTERVAL_SAFE_RANGE[interval_type]
             if shift < safe_min or shift > safe_max:
-                # Snap to nearest safe interval
                 if abs(shift - safe_min) <= abs(shift - safe_max):
                     harmony_midi = midi_pitch + safe_min
                 else:
