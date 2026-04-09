@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 
 interface Props {
   interval: string;
@@ -28,6 +28,14 @@ export function IntervalCard({
 }: Props) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [mode, setMode] = useState<'mixed' | 'harmony'>('mixed');
+
+  // Stop audio when another card starts playing
+  useEffect(() => {
+    if (!isPlaying && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+  }, [isPlaying]);
 
   const handlePlay = useCallback(() => {
     if (isPlaying) {

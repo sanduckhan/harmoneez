@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import type { KeyDetectionResult, PipelineResult } from './types';
 import { uploadFile, detectKey, startProcessing, audioUrl } from './api';
 import { useJobProgress } from './hooks/useJobProgress';
@@ -68,13 +68,15 @@ function App() {
     }
   }, [jobId, selectedKey, regionStart, regionEnd, pitchCorrect, harmonyVolume]);
 
-  if (progress?.status === 'completed' && progress.result && !result) {
-    setResult(progress.result);
-    setProcessing(false);
-  }
-  if (progress?.status === 'failed' && processing) {
-    setProcessing(false);
-  }
+  useEffect(() => {
+    if (progress?.status === 'completed' && progress.result && !result) {
+      setResult(progress.result);
+      setProcessing(false);
+    }
+    if (progress?.status === 'failed' && processing) {
+      setProcessing(false);
+    }
+  }, [progress]);
 
   return (
     <div className="min-h-screen bg-gray-900">

@@ -14,11 +14,6 @@ export function ResultsGrid({ jobId, result }: Props) {
   const [downloading, setDownloading] = useState(false);
 
   const handlePlay = useCallback((interval: string) => {
-    // Stop any currently playing audio
-    document.querySelectorAll('audio').forEach((a) => {
-      a.pause();
-      a.currentTime = 0;
-    });
     setPlayingInterval(interval);
   }, []);
 

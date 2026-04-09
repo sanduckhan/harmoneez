@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { formatTime } from '../utils';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin, { type Region } from 'wavesurfer.js/dist/plugins/regions.js';
 
@@ -73,11 +74,6 @@ export function WaveformPlayer({ audioUrl, onRegionChange }: Props) {
     wsRef.current?.playPause();
   }, []);
 
-  const formatTime = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, '0')}`;
-  };
 
   return (
     <div className="space-y-3">

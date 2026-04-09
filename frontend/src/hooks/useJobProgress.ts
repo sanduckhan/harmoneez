@@ -6,9 +6,11 @@ export function useJobProgress(jobId: string | null, processing: boolean) {
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
+    setProgress(null);
     if (!jobId || !processing) return;
 
-    const ws = new WebSocket(`ws://${window.location.host}/ws/${jobId}`);
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/${jobId}`);
     wsRef.current = ws;
 
     ws.onmessage = (event) => {
@@ -16,8 +18,8 @@ export function useJobProgress(jobId: string | null, processing: boolean) {
       setProgress(data);
     };
 
-    ws.onerror = () => {
-      setProgress(prev => prev ? { ...prev, status: 'failed', error: 'WebSocket connection lost' } : null);
+    ws.onerror = (e) => {
+      console.error('WebSocket error:', e);
     };
 
     return () => {

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 import soundfile as sf
-from fastapi import FastAPI, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -124,7 +124,7 @@ async def upload_file(file: UploadFile):
     """Upload a WAV/MP3 file. Returns job_id and file info."""
     ext = Path(file.filename).suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
-        return {"error": f"Unsupported format '{ext}'. Use WAV or MP3."}, 400
+        raise HTTPException(status_code=400, detail=f"Unsupported format '{ext}'. Use WAV or MP3.")
 
     job_id = str(uuid.uuid4())[:8]
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"harmoneez_{job_id}_"))
@@ -159,7 +159,7 @@ async def detect_key_endpoint(job_id: str):
     """Detect the key of the uploaded audio."""
     job = jobs.get(job_id)
     if not job:
-        return {"error": "Job not found"}, 404
+        raise HTTPException(status_code=404, detail="Job not found")
 
     # Run key detection in a thread to not block
     def _detect():
@@ -186,16 +186,16 @@ async def process_file(job_id: str, req: ProcessRequest):
     """Start processing. Progress is streamed via WebSocket."""
     job = jobs.get(job_id)
     if not job:
-        return {"error": "Job not found"}, 404
+        raise HTTPException(status_code=404, detail="Job not found")
     if job.status == "processing":
-        return {"error": "Already processing"}, 409
+        raise HTTPException(status_code=409, detail="Already processing")
 
     # Validate key if provided
     if req.key:
         try:
             req.key = parse_key_string(req.key)
         except ValueError as e:
-            return {"error": str(e)}, 400
+            raise HTTPException(status_code=400, detail=str(e))
 
     job.status = "processing"
     job.params = req.model_dump()
@@ -260,7 +260,7 @@ async def get_results(job_id: str):
     """Get processing results."""
     job = jobs.get(job_id)
     if not job:
-        return {"error": "Job not found"}, 404
+        raise HTTPException(status_code=404, detail="Job not found")
 
     return {
         "status": job.status,
@@ -274,11 +274,11 @@ async def get_file(job_id: str, filename: str):
     """Serve a generated audio file."""
     job = jobs.get(job_id)
     if not job:
-        return {"error": "Job not found"}, 404
+        raise HTTPException(status_code=404, detail="Job not found")
 
     file_path = job.tmp_dir / filename
     if not file_path.is_file():
-        return {"error": "File not found"}, 404
+        raise HTTPException(status_code=404, detail="File not found")
 
     return FileResponse(str(file_path), media_type="audio/wav", filename=filename)
 
@@ -288,7 +288,7 @@ async def download_zip(job_id: str, req: DownloadRequest):
     """Download selected intervals as a ZIP file."""
     job = jobs.get(job_id)
     if not job or not job.result:
-        return {"error": "Job not found or not completed"}, 404
+        raise HTTPException(status_code=404, detail="Job not found or not completed")
 
     buf = BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -357,7 +357,7 @@ async def get_uploaded_audio(job_id: str):
     """Serve the original uploaded audio file (for waveform display)."""
     job = jobs.get(job_id)
     if not job:
-        return {"error": "Job not found"}, 404
+        raise HTTPException(status_code=404, detail="Job not found")
 
     return FileResponse(str(job.input_path), media_type="audio/wav", filename=job.filename)
 

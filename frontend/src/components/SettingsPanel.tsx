@@ -1,5 +1,6 @@
 import type { KeyDetectionResult } from '../types';
 import { ALL_KEYS } from '../types';
+import { formatTime } from '../utils';
 
 interface Props {
   keyInfo: KeyDetectionResult | null;
@@ -19,12 +20,6 @@ export function SettingsPanel({
   harmonyVolume, onVolumeChange,
   regionStart, regionEnd,
 }: Props) {
-  const formatTime = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, '0')}`;
-  };
-
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 bg-gray-800/50 rounded-lg">
       {/* Key */}

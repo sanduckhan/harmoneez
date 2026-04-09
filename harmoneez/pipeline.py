@@ -12,7 +12,7 @@ from .key_detection import detect_key, detect_key_changes
 from .pitch_correction import pitch_correct_vocals
 from .melody import extract_melody
 from .harmony import generate_harmony
-from .renderer import render_harmony
+from .renderer import analyze_world, render_harmony
 from .mixer import mix_and_save
 from .utils import INTERVAL_TYPES, SUPPORTED_EXTENSIONS
 
@@ -85,16 +85,21 @@ def run_pipeline(
     vocals_audio, sr = separate_vocals(input_path, tmp_dir)
     progress("separating", f"Vocal track: {len(vocals_audio) / sr:.1f}s at {sr}Hz", 1, total_steps)
 
-    # Step 2: Detect key
-    progress("detecting_key", "Detecting song key...", 2, total_steps)
-    detected_key, confidence, candidates = detect_key(vocals_audio, sr)
-    has_key_change = detect_key_changes(vocals_audio, sr, detected_key)
-    confirmed_key = key if key else detected_key
-
-    if has_key_change:
-        progress("detecting_key", f"Key change detected. Using {confirmed_key}", 2, total_steps)
+    # Step 2: Detect key (skip if already provided)
+    if key:
+        confirmed_key = key
+        confidence = 1.0
+        candidates = [(key, 1.0)]
+        has_key_change = False
+        progress("detecting_key", f"Using provided key: {confirmed_key}", 2, total_steps)
     else:
-        progress("detecting_key", f"Key: {confirmed_key} (confidence: {confidence:.2f})", 2, total_steps)
+        progress("detecting_key", "Detecting song key...", 2, total_steps)
+        confirmed_key, confidence, candidates = detect_key(vocals_audio, sr)
+        has_key_change = detect_key_changes(vocals_audio, sr, confirmed_key)
+        if has_key_change:
+            progress("detecting_key", f"Key change detected. Using {confirmed_key}", 2, total_steps)
+        else:
+            progress("detecting_key", f"Key: {confirmed_key} (confidence: {confidence:.2f})", 2, total_steps)
 
     # Crop to section
     vocals_path = tmp_dir / "vocals.wav"
@@ -123,6 +128,10 @@ def run_pipeline(
     melody_notes = extract_melody(vocals_path)
     progress("extracting_melody", f"Found {len(melody_notes)} notes", 4, total_steps)
 
+    # WORLD analysis: run once, reuse for all intervals
+    progress("analyzing", "Analyzing vocal audio...", 5, total_steps)
+    world_data = analyze_world(vocals_audio, sr)
+
     # Steps 5+: Generate + render + mix for each interval
     output_files = []
     for i, interval_type in enumerate(interval_list):
@@ -130,7 +139,7 @@ def run_pipeline(
         progress("generating", f"Generating {interval_type}...", step_num, total_steps)
 
         harmony_notes = generate_harmony(melody_notes, confirmed_key, interval_type)
-        harmony_audio = render_harmony(vocals_audio, sr, harmony_notes)
+        harmony_audio = render_harmony(vocals_audio, sr, harmony_notes, world_analysis=world_data)
         harmony_path, mixed_path = mix_and_save(
             vocals_audio, harmony_audio, sr, input_path,
             harmony_volume, interval_type, output_dir,
