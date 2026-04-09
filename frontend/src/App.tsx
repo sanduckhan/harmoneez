@@ -9,6 +9,7 @@ import { WaveformPlayer } from './components/WaveformPlayer';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ProgressPanel } from './components/ProgressPanel';
 import { ResultsGrid } from './components/ResultsGrid';
+import { RecordingOverlay } from './components/RecordingOverlay';
 
 function App() {
   const [jobId, setJobId] = useState<string | null>(null);
@@ -29,6 +30,7 @@ function App() {
 
   const [result, setResult] = useState<PipelineResult | null>(null);
   const [pitchData, setPitchData] = useState<PitchFrame[]>([]);
+  const [recordingMode, setRecordingMode] = useState(false);
 
   const handleUpload = useCallback(async (file: File) => {
     setUploading(true);
@@ -85,6 +87,26 @@ function App() {
     }
   }, [progress]);
 
+  const handleRecordingComplete = useCallback(async (blob: Blob) => {
+    setRecordingMode(false);
+    setUploading(true);
+    setResult(null);
+    setPitchData([]);
+    try {
+      const file = new File([blob], 'recording.webm', { type: 'audio/webm' });
+      const res = await uploadFile(file);
+      setJobId(res.job_id);
+      setFilename('Recording');
+      const keyRes = await detectKey(res.job_id);
+      setKeyInfo(keyRes);
+      setSelectedKey(keyRes.key);
+    } catch (e) {
+      alert(`Upload failed: ${e}`);
+    } finally {
+      setUploading(false);
+    }
+  }, []);
+
   const resetAll = () => {
     setJobId(null);
     setFilename(null);
@@ -94,6 +116,7 @@ function App() {
     setRegionStart(null);
     setRegionEnd(null);
     setPitchData([]);
+    setRecordingMode(false);
   };
 
   return (
@@ -173,8 +196,29 @@ function App() {
                   {keyInfo.key}
                 </span>
               )}
+              {!recordingMode && !processing && !result && (
+                <button
+                  onClick={() => setRecordingMode(true)}
+                  className="text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--red)] transition-colors"
+                >
+                  Record Over This
+                </button>
+              )}
             </div>
 
+            {/* Recording overlay */}
+            <AnimatePresence>
+              {recordingMode && (
+                <RecordingOverlay
+                  referenceAudioUrl={audioUrl(jobId)}
+                  onRecordingComplete={handleRecordingComplete}
+                  onCancel={() => setRecordingMode(false)}
+                />
+              )}
+            </AnimatePresence>
+
+            {!recordingMode && (
+              <>
             <WaveformPlayer
               audioUrl={audioUrl(jobId)}
               onRegionChange={handleRegionChange}
@@ -211,6 +255,8 @@ function App() {
             {processing && <ProgressPanel progress={progress} />}
 
             {result && <ResultsGrid jobId={jobId} result={result} />}
+              </>
+            )}
           </motion.div>
         )}
 

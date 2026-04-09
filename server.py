@@ -119,12 +119,15 @@ class DownloadRequest(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+UPLOAD_EXTENSIONS = {'.wav', '.mp3', '.webm', '.ogg'}
+
+
 @app.post("/api/upload")
 async def upload_file(file: UploadFile):
-    """Upload a WAV/MP3 file. Returns job_id and file info."""
+    """Upload a WAV/MP3/WebM file. Returns job_id and file info."""
     ext = Path(file.filename).suffix.lower()
-    if ext not in SUPPORTED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Unsupported format '{ext}'. Use WAV or MP3.")
+    if ext not in UPLOAD_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported format '{ext}'. Use WAV, MP3, or WebM.")
 
     job_id = str(uuid.uuid4())[:8]
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"harmoneez_{job_id}_"))
@@ -133,6 +136,16 @@ async def upload_file(file: UploadFile):
     with open(input_path, "wb") as f:
         content = await file.read()
         f.write(content)
+
+    # Convert webm/ogg to wav using ffmpeg
+    if ext in ('.webm', '.ogg'):
+        import subprocess
+        wav_path = tmp_dir / (Path(file.filename).stem + '.wav')
+        subprocess.run(
+            ['ffmpeg', '-i', str(input_path), '-ar', '44100', '-ac', '1', str(wav_path)],
+            capture_output=True, check=True,
+        )
+        input_path = wav_path
 
     # Get duration
     info = sf.info(str(input_path))
