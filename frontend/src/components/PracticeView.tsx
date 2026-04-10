@@ -8,7 +8,7 @@ import { PitchCanvas } from './PitchCanvas';
 import type { CanvasMode } from './PitchCanvas';
 import { ProgressPanel } from './ProgressPanel';
 import { ResultsGrid } from './ResultsGrid';
-import { formatTime } from '../utils';
+import { formatTime, getScalePitchClasses } from '../utils';
 
 type FlowStep = 'upload' | 'preparing' | 'guide' | 'recording' | 'review' | 'generating' | 'results';
 
@@ -419,6 +419,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
               duration={refDuration}
               mode={canvasMode}
               isPlaying={isPlaying || (step === 'recording' && !recordingPaused)}
+              scalePitchClasses={getScalePitchClasses(detectedKey)}
               onScrub={handleScrub}
               onRegionSelect={handleRegionSelect}
             />

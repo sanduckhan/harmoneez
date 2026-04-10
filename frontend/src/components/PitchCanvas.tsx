@@ -6,10 +6,11 @@ export type CanvasMode = 'guide' | 'recording' | 'review';
 interface Props {
   melodyNotes: MelodyNote[];
   pitchSamplesRef: React.RefObject<PitchSample[]>;
-  getTime: () => number;  // read current time directly (no React state hop)
+  getTime: () => number;
   duration: number;
   mode: CanvasMode;
   isPlaying: boolean;
+  scalePitchClasses?: number[];  // pitch classes in the song's key (0-11)
   onScrub?: (time: number) => void;
   onRegionSelect?: (start: number, end: number) => void;
   className?: string;
@@ -25,6 +26,7 @@ const GRID_MAJOR = 'rgba(42, 42, 64, 0.5)';
 const GRID_MINOR = 'rgba(30, 30, 48, 0.25)';
 const AMBER = '#f5a623';
 const AMBER_DIM = 'rgba(245, 166, 35, 0.25)';
+const IN_KEY_ROW = 'rgba(245, 166, 35, 0.04)';  // subtle highlight for in-key rows
 const AMBER_GLOW = 'rgba(245, 166, 35, 0.08)';
 const TEAL = '#2dd4a8';
 const RED = '#ef4444';
@@ -69,7 +71,7 @@ function deviationColor(notes: MelodyNote[], time: number, userMidi: number): st
 
 export function PitchCanvas({
   melodyNotes, pitchSamplesRef, getTime, duration,
-  mode, isPlaying, onScrub, onRegionSelect, className,
+  mode, isPlaying, scalePitchClasses, onScrub, onRegionSelect, className,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
@@ -109,7 +111,8 @@ export function PitchCanvas({
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, w, h);
 
-    // 2. Semitone grid
+    // 2. Semitone grid with in-key row highlights
+    const rowH = DRAW_H / midiRange;
     ctx.font = '9px "JetBrains Mono", monospace';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
@@ -118,17 +121,26 @@ export function PitchCanvas({
       const y = midiToY(midi);
       const noteIdx = ((midi % 12) + 12) % 12;
       const isNatural = [0, 2, 4, 5, 7, 9, 11].includes(noteIdx);
+      const isInKey = scalePitchClasses?.includes(noteIdx) ?? false;
 
+      // Highlight in-key rows
+      if (isInKey) {
+        ctx.fillStyle = IN_KEY_ROW;
+        ctx.fillRect(MARGIN_LEFT, y - rowH / 2, DRAW_W, rowH);
+      }
+
+      // Grid line
       ctx.beginPath();
-      ctx.strokeStyle = isNatural ? GRID_MAJOR : GRID_MINOR;
-      ctx.lineWidth = isNatural ? 0.8 : 0.4;
+      ctx.strokeStyle = isInKey ? GRID_MAJOR : GRID_MINOR;
+      ctx.lineWidth = isInKey ? 0.8 : 0.3;
       ctx.moveTo(MARGIN_LEFT, y);
       ctx.lineTo(w, y);
       ctx.stroke();
 
-      if (isNatural) {
-        const octave = Math.floor(midi / 12) - 1;
-        ctx.fillStyle = TEXT_MUTED;
+      // Note label — highlight in-key notes
+      const octave = Math.floor(midi / 12) - 1;
+      if (isNatural || isInKey) {
+        ctx.fillStyle = isInKey ? 'rgba(245, 166, 35, 0.5)' : TEXT_MUTED;
         ctx.fillText(`${NOTE_NAMES[noteIdx]}${octave}`, MARGIN_LEFT - 4, y);
       }
     }
@@ -371,7 +383,7 @@ export function PitchCanvas({
     <canvas
       ref={canvasRef}
       className={`w-full rounded-lg ${className || ''}`}
-      style={{ height: '280px', cursor: mode === 'review' ? 'crosshair' : 'default' }}
+      style={{ height: '420px', cursor: mode === 'review' ? 'crosshair' : 'default' }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
