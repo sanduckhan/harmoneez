@@ -6,7 +6,7 @@ export type CanvasMode = 'guide' | 'recording' | 'review';
 interface Props {
   melodyNotes: MelodyNote[];
   pitchSamplesRef: React.RefObject<PitchSample[]>;
-  currentTime: number;
+  getTime: () => number;  // read current time directly (no React state hop)
   duration: number;
   mode: CanvasMode;
   isPlaying: boolean;
@@ -68,7 +68,7 @@ function deviationColor(notes: MelodyNote[], time: number, userMidi: number): st
 }
 
 export function PitchCanvas({
-  melodyNotes, pitchSamplesRef, currentTime, duration,
+  melodyNotes, pitchSamplesRef, getTime, duration,
   mode, isPlaying, onScrub, onRegionSelect, className,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -77,9 +77,9 @@ export function PitchCanvas({
   const pitchRange = useRef(computePitchRange(melodyNotes));
   const isDragging = useRef(false);
 
-  // Store mutable values in refs to avoid effect dependency cascades
-  const currentTimeRef = useRef(currentTime);
-  currentTimeRef.current = currentTime;
+  // Store callbacks in refs to avoid effect dependency cascades
+  const getTimeRef = useRef(getTime);
+  getTimeRef.current = getTime;
   const selStartRef = useRef<number | null>(null);
   const selEndRef = useRef<number | null>(null);
   const [, forceRender] = useState(0); // trigger re-render only when selection finalizes
@@ -93,7 +93,7 @@ export function PitchCanvas({
   }, [melodyNotes]);
 
   const render = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
-    const t = currentTimeRef.current;
+    const t = getTimeRef.current();
     const DRAW_W = w - MARGIN_LEFT;
     const DRAW_H = h - MARGIN_BOTTOM;
     const VIS = visSecsRef.current;
@@ -291,10 +291,13 @@ export function PitchCanvas({
     }
   }, [isPlaying]);
 
-  // Redraw when scrubbing (paused, currentTime changes from outside)
+  // Redraw when scrubbing (paused — triggered by parent calling onScrub which changes the audio time)
+  const redraw = useCallback(() => loopRef.current(), []);
+
+  // Expose redraw for external triggers
   useEffect(() => {
     if (!isPlaying) loopRef.current();
-  }, [currentTime]);
+  }, [isPlaying]);
 
   // Mouse handlers — read from refs to avoid dependency cascades
   const getTimeFromX = useCallback((clientX: number) => {
@@ -304,7 +307,7 @@ export function PitchCanvas({
     const x = clientX - rect.left;
     const DRAW_W = rect.width - MARGIN_LEFT;
     const VIS = visSecsRef.current;
-    const windowStart = currentTimeRef.current - VIS * NOW_FRACTION;
+    const windowStart = getTimeRef.current() - VIS * NOW_FRACTION;
     return windowStart + ((x - MARGIN_LEFT) / DRAW_W) * VIS;
   }, []);
 

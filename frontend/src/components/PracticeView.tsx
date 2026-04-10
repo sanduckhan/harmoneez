@@ -415,7 +415,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
             <PitchCanvas
               melodyNotes={melodyNotes}
               pitchSamplesRef={pitchSamplesRef}
-              currentTime={currentTime}
+              getTime={() => audioRef.current?.currentTime ?? currentTimeRef.current}
               duration={refDuration}
               mode={canvasMode}
               isPlaying={isPlaying || (step === 'recording' && !recordingPaused)}
