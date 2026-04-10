@@ -189,6 +189,20 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     }
   }, []);
 
+  const [recordingPaused, setRecordingPaused] = useState(false);
+
+  const pauseRecording = useCallback(() => {
+    mediaRecorderRef.current?.pause();
+    audioRef.current?.pause();
+    setRecordingPaused(true);
+  }, []);
+
+  const resumeRecording = useCallback(() => {
+    mediaRecorderRef.current?.resume();
+    audioRef.current?.play();
+    setRecordingPaused(false);
+  }, []);
+
   const stopRecording = useCallback(() => {
     mediaRecorderRef.current?.stop();
     micStreamRef.current?.getTracks().forEach(t => t.stop());
@@ -196,6 +210,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     setMicStream(null);
     audioRef.current?.pause();
     setIsPlaying(false);
+    setRecordingPaused(false);
     setStep('review');
   }, []);
 
@@ -377,7 +392,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
               currentTime={currentTime}
               duration={refDuration}
               mode={canvasMode}
-              isPlaying={isPlaying || step === 'recording'}
+              isPlaying={isPlaying || (step === 'recording' && !recordingPaused)}
               onScrub={handleScrub}
               onRegionSelect={handleRegionSelect}
             />
@@ -418,13 +433,21 @@ export function PracticeView({ onBack, resumedSession }: Props) {
             )}
 
             {step === 'recording' && (
-              <button
-                onClick={stopRecording}
-                className="flex items-center gap-2 px-6 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] hover:border-[var(--red)] text-sm font-mono text-[var(--text-primary)] transition-all"
-              >
-                <div className="w-2.5 h-2.5 rounded-sm bg-[var(--red)]" />
-                Stop Recording
-              </button>
+              <>
+                <button
+                  onClick={recordingPaused ? resumeRecording : pauseRecording}
+                  className="px-4 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] hover:border-[var(--amber)]/50 text-sm font-mono text-[var(--text-secondary)] transition-all"
+                >
+                  {recordingPaused ? 'RESUME' : 'PAUSE'}
+                </button>
+                <button
+                  onClick={stopRecording}
+                  className="flex items-center gap-2 px-6 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] hover:border-[var(--red)] text-sm font-mono text-[var(--text-primary)] transition-all"
+                >
+                  <div className="w-2.5 h-2.5 rounded-sm bg-[var(--red)]" />
+                  Stop
+                </button>
+              </>
             )}
 
             {step === 'review' && (
