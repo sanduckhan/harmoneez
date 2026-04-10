@@ -466,33 +466,58 @@ export function PracticeView({ onBack, resumedSession }: Props) {
 
           {/* Controls */}
           <div className="flex items-center gap-3">
-            {/* Play/Pause — always visible */}
-            <button
-              onClick={isPlaying ? pauseReference : playReference}
-              className="px-4 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] hover:border-[var(--amber)]/50 text-sm font-mono text-[var(--text-secondary)] transition-all"
-            >
-              {isPlaying ? 'PAUSE' : 'PLAY'}
-            </button>
-
-            {/* Record button — guide mode */}
             {step === 'guide' && (
-              <button
-                onClick={startRecording}
-                className="flex items-center gap-2 px-6 py-2 rounded-lg bg-[var(--red)] text-white font-mono uppercase tracking-wider text-sm hover:shadow-[0_0_20px_var(--red-glow)] transition-all"
-              >
-                <div className="w-2.5 h-2.5 rounded-full bg-white" />
-                Record
-              </button>
+              <>
+                <button
+                  onClick={isPlaying ? pauseReference : playReference}
+                  className="px-4 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] hover:border-[var(--amber)]/50 text-sm font-mono text-[var(--text-secondary)] transition-all"
+                >
+                  {isPlaying ? 'PAUSE' : 'PREVIEW'}
+                </button>
+                <button
+                  onClick={startRecording}
+                  className="flex items-center gap-2 px-6 py-2 rounded-lg bg-[var(--red)] text-white font-mono uppercase tracking-wider text-sm hover:shadow-[0_0_20px_var(--red-glow)] transition-all"
+                >
+                  <div className="w-2.5 h-2.5 rounded-full bg-white" />
+                  Record
+                </button>
+                {/* Audio source selector */}
+                <div className="flex items-center gap-1 ml-auto bg-[var(--bg-surface)] rounded border border-[var(--border)] text-[10px] font-mono overflow-hidden">
+                  {(['mix', 'vocals', 'instrumental'] as const).map((src) => (
+                    <button
+                      key={src}
+                      onClick={() => {
+                        const wasPlaying = !audioRef.current?.paused;
+                        const time = audioRef.current?.currentTime ?? 0;
+                        setAudioSource(src);
+                        // Restore playback position after source change
+                        setTimeout(() => {
+                          if (audioRef.current) {
+                            audioRef.current.currentTime = time;
+                            if (wasPlaying) audioRef.current.play();
+                          }
+                        }, 50);
+                      }}
+                      className={`px-2.5 py-1 transition-all uppercase tracking-wider ${
+                        audioSource === src
+                          ? 'bg-[var(--amber)] text-[var(--bg-deep)] font-semibold'
+                          : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                      }`}
+                    >
+                      {src === 'mix' ? 'Full' : src === 'vocals' ? 'Vocals' : 'Band'}
+                    </button>
+                  ))}
+                </div>
+              </>
             )}
 
-            {/* Recording controls */}
             {step === 'recording' && (
               <>
                 <button
                   onClick={recordingPaused ? resumeRecording : pauseRecording}
                   className="px-4 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] hover:border-[var(--amber)]/50 text-sm font-mono text-[var(--text-secondary)] transition-all"
                 >
-                  {recordingPaused ? 'RESUME REC' : 'PAUSE REC'}
+                  {recordingPaused ? 'RESUME' : 'PAUSE'}
                 </button>
                 <button
                   onClick={stopRecording}
@@ -504,7 +529,6 @@ export function PracticeView({ onBack, resumedSession }: Props) {
               </>
             )}
 
-            {/* Review controls */}
             {step === 'review' && (
               <>
                 <button
@@ -524,33 +548,6 @@ export function PracticeView({ onBack, resumedSession }: Props) {
                 </span>
               </>
             )}
-
-            {/* Audio source selector — always visible */}
-            <div className="flex items-center gap-1 ml-auto bg-[var(--bg-surface)] rounded border border-[var(--border)] text-[10px] font-mono overflow-hidden">
-              {(['mix', 'vocals', 'instrumental'] as const).map((src) => (
-                <button
-                  key={src}
-                  onClick={() => {
-                    const wasPlaying = !audioRef.current?.paused;
-                    const time = audioRef.current?.currentTime ?? 0;
-                    setAudioSource(src);
-                    setTimeout(() => {
-                      if (audioRef.current) {
-                        audioRef.current.currentTime = time;
-                        if (wasPlaying) audioRef.current.play();
-                      }
-                    }, 50);
-                  }}
-                  className={`px-2.5 py-1 transition-all uppercase tracking-wider ${
-                    audioSource === src
-                      ? 'bg-[var(--amber)] text-[var(--bg-deep)] font-semibold'
-                      : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-                  }`}
-                >
-                  {src === 'mix' ? 'Full' : src === 'vocals' ? 'Vocals' : 'Band'}
-                </button>
-              ))}
-            </div>
           </div>
 
           {/* Debug panel */}
