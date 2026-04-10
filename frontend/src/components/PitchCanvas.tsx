@@ -230,20 +230,14 @@ export function PitchCanvas({
   const renderRef = useRef(render);
   renderRef.current = render;
 
-  // Single stable animation loop — set up once, never torn down
+  // Stable canvas setup — never torn down
+  const loopRef = useRef<() => void>(() => {});
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const dpr = window.devicePixelRatio || 1;
-
-    const resize = () => {
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      // Redraw immediately after resize
-      drawFrame();
-    };
 
     const drawFrame = () => {
       const ctx = canvas.getContext('2d');
@@ -253,6 +247,13 @@ export function PitchCanvas({
       ctx.scale(dpr, dpr);
       renderRef.current(ctx, rect.width, rect.height);
       ctx.restore();
+    };
+
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      drawFrame();
     };
 
     resize();
@@ -267,8 +268,9 @@ export function PitchCanvas({
         animRef.current = requestAnimationFrame(loop);
       }
     };
+    loopRef.current = loop;
 
-    // Draw once immediately
+    // Draw once
     requestAnimationFrame(loop);
 
     return () => {
@@ -276,46 +278,23 @@ export function PitchCanvas({
       cancelAnimationFrame(animRef.current);
       obs.disconnect();
     };
-  }, []); // stable — never re-runs
+  }, []);
 
-  // When isPlaying changes to true, kick off the animation loop
+  // Kick the loop when isPlaying becomes true (no second loop — reuses the stable one)
   useEffect(() => {
     if (isPlaying) {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const dpr = window.devicePixelRatio || 1;
-
-      const loop = () => {
-        if (!isPlayingRef.current) return;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-        const rect = canvas.getBoundingClientRect();
-        ctx.save();
-        ctx.scale(dpr, dpr);
-        renderRef.current(ctx, rect.width, rect.height);
-        ctx.restore();
-        animRef.current = requestAnimationFrame(loop);
-      };
-      animRef.current = requestAnimationFrame(loop);
-
+      animRef.current = requestAnimationFrame(loopRef.current);
       return () => cancelAnimationFrame(animRef.current);
+    } else {
+      // Redraw once when paused (freeze frame)
+      loopRef.current();
     }
   }, [isPlaying]);
 
-  // Redraw when paused and currentTime changes (scrubbing)
+  // Redraw when scrubbing (paused, currentTime changes from outside)
   useEffect(() => {
-    if (isPlaying) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    ctx.save();
-    ctx.scale(dpr, dpr);
-    renderRef.current(ctx, rect.width, rect.height);
-    ctx.restore();
-  }, [currentTime, isPlaying]);
+    if (!isPlaying) loopRef.current();
+  }, [currentTime]);
 
   // Mouse handlers — read from refs to avoid dependency cascades
   const getTimeFromX = useCallback((clientX: number) => {

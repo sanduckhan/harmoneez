@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion } from 'motion/react';
-import type { MelodyNote, PitchSample, PipelineResult, KeyDetectionResult } from '../types';
+import type { MelodyNote, PitchSample, PipelineResult } from '../types';
 import { uploadFile, prepareReference, getMelodyData, startProcessing, audioUrl } from '../api';
 import { useJobProgress } from '../hooks/useJobProgress';
 import { usePitchDetection } from '../hooks/usePitchDetection';
@@ -111,8 +111,11 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   // Use ref for mic stream to avoid stale closures
   const micStreamRef = useRef<MediaStream | null>(null);
 
-  // Audio time sync — re-run when refJobId changes (audio element is conditional on refJobId)
+  // Audio time sync — throttled to ~15fps for UI, PitchCanvas reads ref directly
   const timeSyncRef = useRef<number>(0);
+  const currentTimeRef = useRef(0);
+  const lastTimeUpdateRef = useRef(0);
+
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -121,7 +124,13 @@ export function PracticeView({ onBack, resumedSession }: Props) {
       setIsPlaying(true);
       const sync = () => {
         if (audio.paused) return;
-        setCurrentTime(audio.currentTime);
+        currentTimeRef.current = audio.currentTime;
+        // Throttle React setState to ~15fps (every ~66ms)
+        const now = performance.now();
+        if (now - lastTimeUpdateRef.current > 66) {
+          setCurrentTime(audio.currentTime);
+          lastTimeUpdateRef.current = now;
+        }
         timeSyncRef.current = requestAnimationFrame(sync);
       };
       timeSyncRef.current = requestAnimationFrame(sync);
@@ -129,10 +138,12 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     const onPause = () => {
       setIsPlaying(false);
       cancelAnimationFrame(timeSyncRef.current);
+      setCurrentTime(audio.currentTime);
     };
     const onEnded = () => {
       setIsPlaying(false);
       cancelAnimationFrame(timeSyncRef.current);
+      setRecordingPaused(false);
       mediaRecorderRef.current?.stop();
       micStreamRef.current?.getTracks().forEach(t => t.stop());
       micStreamRef.current = null;
@@ -148,7 +159,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('ended', onEnded);
     };
-  }, [refJobId]); // re-run when audio element appears
+  }, [refJobId]);
 
   // --- Guide mode ---
   const playReference = useCallback(() => {
@@ -176,6 +187,8 @@ export function PracticeView({ onBack, resumedSession }: Props) {
 
       pitchSamplesRef.current = [];
       recordStartTimeRef.current = Date.now();
+      pausedElapsedRef.current = 0;
+      setRecordingPaused(false);
 
       // Start reference playback
       if (audioRef.current) {
@@ -190,14 +203,18 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   }, []);
 
   const [recordingPaused, setRecordingPaused] = useState(false);
+  const pausedElapsedRef = useRef(0);
 
   const pauseRecording = useCallback(() => {
+    // Accumulate elapsed time before pausing
+    pausedElapsedRef.current += (Date.now() - recordStartTimeRef.current) / 1000;
     mediaRecorderRef.current?.pause();
     audioRef.current?.pause();
     setRecordingPaused(true);
   }, []);
 
   const resumeRecording = useCallback(() => {
+    recordStartTimeRef.current = Date.now(); // reset wall-clock base
     mediaRecorderRef.current?.resume();
     audioRef.current?.play();
     setRecordingPaused(false);
@@ -214,15 +231,15 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     setStep('review');
   }, []);
 
-  // Pitch detection during recording
+  // Pitch detection during recording (disabled when paused)
   usePitchDetection({
     stream: micStream,
-    enabled: step === 'recording',
+    enabled: step === 'recording' && !recordingPaused,
     onPitchDetected: (sample) => {
       pitchSamplesRef.current.push(sample);
       setRecordingElapsed(sample.time);
     },
-    getElapsedTime: () => (Date.now() - recordStartTimeRef.current) / 1000,
+    getElapsedTime: () => pausedElapsedRef.current + (Date.now() - recordStartTimeRef.current) / 1000,
   });
 
   // --- Review ---
@@ -305,6 +322,15 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     }
     setAccuracyScore(Math.round((inTuneCount / voiced.length) * 100));
   }, [step, melodyNotes]);
+
+  // Cleanup mic on unmount
+  useEffect(() => {
+    return () => {
+      mediaRecorderRef.current?.stop();
+      micStreamRef.current?.getTracks().forEach(t => t.stop());
+      cancelAnimationFrame(timeSyncRef.current);
+    };
+  }, []);
 
   // Canvas mode mapping
   const canvasMode: CanvasMode =

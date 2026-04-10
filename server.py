@@ -5,6 +5,7 @@ Run with: python server.py
 """
 
 import asyncio
+import json
 import shutil
 import tempfile
 import time
@@ -23,7 +24,7 @@ from pydantic import BaseModel
 
 from harmoneez.key_detection import detect_key, detect_key_changes, parse_key_string
 from harmoneez.pipeline import run_pipeline
-from harmoneez.utils import INTERVAL_TYPES, SUPPORTED_EXTENSIONS
+from harmoneez.utils import INTERVAL_TYPES
 
 # ── Session persistence ───────────────────────────────────────────────────────
 
@@ -85,14 +86,14 @@ def save_session(job: Job, key: str = "", melody_count: int = 0):
         "created_at": job.created_at,
         "result": job.result,
     }
-    import json
+
     with open(session_dir / "session.json", "w") as f:
         json.dump(meta, f)
 
 
 def load_sessions() -> list[dict]:
     """Load all saved sessions from disk."""
-    import json
+
     sessions = []
     if not SESSIONS_DIR.exists():
         return sessions
@@ -108,12 +109,14 @@ def load_sessions() -> list[dict]:
 
 def restore_session(session_id: str) -> Job | None:
     """Restore a saved session into the active jobs dict."""
-    session_dir = SESSIONS_DIR / session_id
+    session_dir = (SESSIONS_DIR / session_id).resolve()
+    if not session_dir.is_relative_to(SESSIONS_DIR.resolve()):
+        return None
     meta_path = session_dir / "session.json"
     if not meta_path.is_file():
         return None
 
-    import json
+
     with open(meta_path) as f:
         meta = json.load(f)
 
@@ -231,7 +234,9 @@ async def resume_session(session_id: str):
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str):
     """Delete a saved session from disk."""
-    session_dir = SESSIONS_DIR / session_id
+    session_dir = (SESSIONS_DIR / session_id).resolve()
+    if not session_dir.is_relative_to(SESSIONS_DIR.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid session ID")
     if not session_dir.is_dir():
         raise HTTPException(status_code=404, detail="Session not found")
     shutil.rmtree(str(session_dir), ignore_errors=True)
@@ -344,7 +349,7 @@ async def _run_prepare(job: Job):
             from harmoneez.separation import separate_vocals
             from harmoneez.key_detection import detect_key
             from harmoneez.melody import extract_melody
-            import json
+        
             import soundfile as sf_local
 
             on_progress("separating", "Isolating vocals...", 1, 3)
@@ -491,7 +496,7 @@ async def get_melody_data(job_id: str):
     if not melody_file.is_file():
         raise HTTPException(status_code=404, detail="Melody data not available")
 
-    import json
+
     with open(melody_file) as f:
         return json.load(f)
 
@@ -507,7 +512,7 @@ async def get_pitch_data(job_id: str):
     if not pitch_file.is_file():
         raise HTTPException(status_code=404, detail="Pitch data not available")
 
-    import json
+
     with open(pitch_file) as f:
         return json.load(f)
 

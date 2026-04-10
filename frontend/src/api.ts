@@ -1,4 +1,4 @@
-import type { UploadResult, KeyDetectionResult, PipelineResult } from './types';
+import type { UploadResult, KeyDetectionResult, PipelineResult, MelodyNote } from './types';
 
 const BASE = '';
 
@@ -57,8 +57,6 @@ export async function downloadZip(jobId: string, intervals: string[]): Promise<v
 export function audioUrl(jobId: string): string {
   return `${BASE}/api/audio/${jobId}`;
 }
-
-import type { MelodyNote } from './types';
 
 export interface SessionInfo {
   id: string;
