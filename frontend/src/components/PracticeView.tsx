@@ -49,6 +49,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   const pitchSamplesRef = useRef<PitchSample[]>([]);
   const [recordingElapsed, setRecordingElapsed] = useState(0);
   const recordStartTimeRef = useRef(0);
+  const recordAudioOffsetRef = useRef(0);
   const [referenceMuted, setReferenceMuted] = useState(false);
   const [audioSource, setAudioSource] = useState<'mix' | 'vocals' | 'instrumental'>('mix');
 
@@ -204,6 +205,8 @@ export function PracticeView({ onBack, resumedSession }: Props) {
       pitchSamplesRef.current = [];
       recordStartTimeRef.current = Date.now();
       pausedElapsedRef.current = 0;
+      // Store the audio offset so pitch samples are in absolute song time
+      recordAudioOffsetRef.current = audioRef.current?.currentTime ?? 0;
       setRecordingPaused(false);
 
       // Start reference playback from current playhead position
@@ -254,7 +257,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
       pitchSamplesRef.current.push(sample);
       setRecordingElapsed(sample.time);
     },
-    getElapsedTime: () => pausedElapsedRef.current + (Date.now() - recordStartTimeRef.current) / 1000,
+    getElapsedTime: () => recordAudioOffsetRef.current + pausedElapsedRef.current + (Date.now() - recordStartTimeRef.current) / 1000,
   });
 
   // --- Review ---
