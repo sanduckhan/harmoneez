@@ -22,6 +22,7 @@ def f0_contour_to_notes(
     min_note_ms: float = 80.0,
     min_gap_ms: float = 30.0,
     energy_dip_ratio: float = 0.3,
+    energy_floor: float = 0.02,
 ) -> list[dict]:
     """
     Convert WORLD F0 contour to note events.
@@ -56,12 +57,12 @@ def f0_contour_to_notes(
             chunk = audio[start:end]
             frame_energy[i] = np.sqrt(np.mean(chunk ** 2))
 
-    # Step 1: Find voiced segments (runs of consecutive voiced frames)
+    # Step 1: Find voiced segments (runs of consecutive voiced frames with enough energy)
     segments = []
     seg_start = None
 
     for i in range(len(f0)):
-        voiced = f0[i] > 1.0
+        voiced = f0[i] > 1.0 and frame_energy[i] > energy_floor
         if voiced and seg_start is None:
             seg_start = i
         elif not voiced and seg_start is not None:

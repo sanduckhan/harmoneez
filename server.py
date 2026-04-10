@@ -377,9 +377,17 @@ async def _run_prepare(job: Job):
                 json.dump(world_notes, f)
 
             # Pitch contour: frame-level F0 in MIDI (null for unvoiced)
+            # Compute per-frame energy for the pitch contour energy gate
+            hop_samples = int((timeaxis[1] - timeaxis[0]) * sr) if len(timeaxis) > 1 else sr // 200
+            ENERGY_FLOOR = 0.02
+
             pitch_contour = []
             for i in range(len(f0)):
-                if f0[i] < 1.0:
+                # Gate: treat low-energy frames as unvoiced (WORLD hallucinates pitch on silence)
+                start_s = int(timeaxis[i] * sr)
+                chunk = vocals_audio[start_s:start_s + hop_samples]
+                rms = float(np.sqrt(np.mean(chunk**2))) if len(chunk) > 0 else 0
+                if f0[i] < 1.0 or rms < ENERGY_FLOOR:
                     pitch_contour.append(None)
                 else:
                     midi = 12 * np.log2(f0[i] / 440.0) + 69
