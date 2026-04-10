@@ -111,7 +111,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   // Use ref for mic stream to avoid stale closures
   const micStreamRef = useRef<MediaStream | null>(null);
 
-  // Audio time sync — use rAF for smooth scrolling, not timeupdate events
+  // Audio time sync — re-run when refJobId changes (audio element is conditional on refJobId)
   const timeSyncRef = useRef<number>(0);
   useEffect(() => {
     const audio = audioRef.current;
@@ -119,7 +119,6 @@ export function PracticeView({ onBack, resumedSession }: Props) {
 
     const onPlay = () => {
       setIsPlaying(true);
-      // Start rAF loop for smooth time updates
       const sync = () => {
         if (audio.paused) return;
         setCurrentTime(audio.currentTime);
@@ -149,7 +148,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('ended', onEnded);
     };
-  }, []);
+  }, [refJobId]); // re-run when audio element appears
 
   // --- Guide mode ---
   const playReference = useCallback(() => {

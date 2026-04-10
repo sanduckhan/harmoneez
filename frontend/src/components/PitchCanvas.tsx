@@ -35,12 +35,15 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 
 
 function computePitchRange(notes: MelodyNote[]) {
   if (notes.length === 0) return { minMidi: 57, maxMidi: 69 };
+  // Filter to vocal range (C2=36 to C6=84) to ignore noise detections
+  const vocalNotes = notes.filter(n => n.midi_pitch >= 36 && n.midi_pitch <= 84);
+  if (vocalNotes.length === 0) return { minMidi: 57, maxMidi: 69 };
   let min = Infinity, max = -Infinity;
-  for (const n of notes) {
+  for (const n of vocalNotes) {
     if (n.midi_pitch < min) min = n.midi_pitch;
     if (n.midi_pitch > max) max = n.midi_pitch;
   }
-  return { minMidi: min - 3, maxMidi: max + 3 };
+  return { minMidi: min - 2, maxMidi: max + 2 };
 }
 
 // Binary search for the active melody note at a given time
@@ -87,7 +90,6 @@ export function PitchCanvas({
 
   useEffect(() => {
     pitchRange.current = computePitchRange(melodyNotes);
-    console.log(`[PitchCanvas] melodyNotes: ${melodyNotes.length}, range: ${pitchRange.current.minMidi}-${pitchRange.current.maxMidi}`);
   }, [melodyNotes]);
 
   const render = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
@@ -166,6 +168,8 @@ export function PitchCanvas({
     ctx.lineWidth = 1;
 
     for (const note of melodyNotes) {
+      // Skip non-vocal noise detections
+      if (note.midi_pitch < 36 || note.midi_pitch > 84) continue;
       const x1 = timeToX(note.start_sec);
       const x2 = timeToX(note.end_sec);
       if (x2 < MARGIN_LEFT || x1 > w) continue;
@@ -252,7 +256,6 @@ export function PitchCanvas({
       }
     };
 
-    // Draw once immediately
     requestAnimationFrame(loop);
 
     return () => {
