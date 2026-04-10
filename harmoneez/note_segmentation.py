@@ -161,6 +161,28 @@ def f0_contour_to_notes(
     if not raw_notes:
         return []
 
+    # Merge short notes (<150ms) into adjacent notes — these are vibrato artifacts
+    MERGE_THRESHOLD = 0.15  # seconds
+    merged = [raw_notes[0]]
+    for note in raw_notes[1:]:
+        prev = merged[-1]
+        note_dur = note["end_sec"] - note["start_sec"]
+        prev_dur = prev["end_sec"] - prev["start_sec"]
+        gap = note["start_sec"] - prev["end_sec"]
+
+        if note_dur < MERGE_THRESHOLD and gap < 0.05:
+            # Short note adjacent to previous — extend previous note
+            prev["end_sec"] = note["end_sec"]
+        elif prev_dur < MERGE_THRESHOLD and gap < 0.05:
+            # Previous was short — extend it to cover this note's pitch
+            prev["end_sec"] = note["end_sec"]
+            prev["midi_pitch"] = note["midi_pitch"]
+            prev["median_hz"] = note["median_hz"]
+            prev["velocity"] = max(prev["velocity"], note["velocity"])
+        else:
+            merged.append(note)
+    raw_notes = merged
+
     # Normalize velocities to 0-1
     max_vel = max(n["velocity"] for n in raw_notes)
     if max_vel > 0:
