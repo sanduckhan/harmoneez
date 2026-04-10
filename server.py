@@ -348,8 +348,6 @@ async def _run_prepare(job: Job):
         def _run():
             from harmoneez.separation import separate_vocals
             from harmoneez.key_detection import detect_key
-            from harmoneez.melody import extract_melody
-        
             import soundfile as sf_local
 
             # Detect key on full mix first (better harmonic context than isolated vocals)
@@ -411,7 +409,7 @@ async def _run_prepare(job: Job):
                 "key": key_name,
                 "confidence": confidence,
                 "candidates": [{"key": k, "confidence": c} for k, c in candidates],
-                "melody_count": len(melody_notes),
+                "melody_count": len(world_notes),
                 "duration": len(vocals_audio) / sr,
             }
 
