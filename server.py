@@ -365,20 +365,18 @@ async def _run_prepare(job: Job):
             on_progress("separating", f"Vocal track: {len(vocals_audio)/sr:.1f}s", 2, 3)
 
             on_progress("extracting_melody", "Extracting melody...", 3, 3)
-            vocals_path = job.tmp_dir / "vocals.wav"
-            melody_notes = extract_melody(vocals_path)
 
-            melody_json = [
-                {"start_sec": float(s), "end_sec": float(e), "midi_pitch": int(p), "velocity": round(float(v), 3)}
-                for s, e, p, v in melody_notes
-            ]
-            with open(job.tmp_dir / "melody_data.json", 'w') as f:
-                json.dump(melody_json, f)
-
-            # Compute amplitude envelope + pitch contour for canvas display
+            # WORLD analysis for pitch contour + note segmentation
             import pyworld as pw
+            from harmoneez.note_segmentation import f0_contour_to_notes
             audio_f64 = vocals_audio.astype(np.float64)
             f0, timeaxis = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1000.0)
+
+            # Derive note rectangles from WORLD pitch contour (aligned with the contour line)
+            world_notes = f0_contour_to_notes(f0, timeaxis, vocals_audio, sr)
+
+            with open(job.tmp_dir / "melody_data.json", 'w') as f:
+                json.dump(world_notes, f)
 
             # Pitch contour: frame-level F0 in MIDI (null for unvoiced)
             pitch_contour = []
