@@ -239,7 +239,7 @@ async def _run_prepare(job: Job):
             melody_notes = extract_melody(vocals_path)
 
             melody_json = [
-                {"start_sec": s, "end_sec": e, "midi_pitch": p, "velocity": round(v, 3)}
+                {"start_sec": float(s), "end_sec": float(e), "midi_pitch": int(p), "velocity": round(float(v), 3)}
                 for s, e, p, v in melody_notes
             ]
             with open(job.tmp_dir / "melody_data.json", 'w') as f:

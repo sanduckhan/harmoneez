@@ -144,7 +144,7 @@ def run_pipeline(
 
     # Save melody data as JSON for the pitch guide
     melody_json = [
-        {"start_sec": s, "end_sec": e, "midi_pitch": p, "velocity": round(v, 3)}
+        {"start_sec": float(s), "end_sec": float(e), "midi_pitch": int(p), "velocity": round(float(v), 3)}
         for s, e, p, v in melody_notes
     ]
     with open(tmp_dir / "melody_data.json", 'w') as f:
