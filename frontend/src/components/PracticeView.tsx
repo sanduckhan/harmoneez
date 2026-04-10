@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion } from 'motion/react';
 import type { MelodyNote, PitchSample, PipelineResult } from '../types';
-import { uploadFile, prepareReference, getMelodyData, startProcessing, audioUrl } from '../api';
+import { uploadFile, prepareReference, getMelodyData, getAmplitudeData, startProcessing, audioUrl } from '../api';
+import type { AmplitudeData } from '../api';
 import { useJobProgress } from '../hooks/useJobProgress';
 import { usePitchDetection } from '../hooks/usePitchDetection';
 import { PitchCanvas } from './PitchCanvas';
@@ -32,6 +33,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   const [refFilename, setRefFilename] = useState<string | null>(null);
   const [melodyNotes, setMelodyNotes] = useState<MelodyNote[]>([]);
   const [detectedKey, setDetectedKey] = useState<string>('C major');
+  const [amplitudeData, setAmplitudeData] = useState<AmplitudeData | null>(null);
   const [refDuration, setRefDuration] = useState(0);
 
   // Audio
@@ -69,8 +71,12 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     setRefFilename(resumedSession.filename);
     setRefDuration(resumedSession.duration);
     setDetectedKey(resumedSession.key);
-    getMelodyData(resumedSession.jobId).then((notes) => {
+    Promise.all([
+      getMelodyData(resumedSession.jobId),
+      getAmplitudeData(resumedSession.jobId),
+    ]).then(([notes, amp]) => {
       setMelodyNotes(notes);
+      setAmplitudeData(amp);
       setStep('guide');
     }).catch(() => {
       alert('Failed to load session data.');
@@ -96,8 +102,12 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   // Watch prepare completion
   useEffect(() => {
     if (prepareProgress?.status === 'completed' && step === 'preparing' && refJobId) {
-      getMelodyData(refJobId).then((notes) => {
+      Promise.all([
+        getMelodyData(refJobId),
+        getAmplitudeData(refJobId),
+      ]).then(([notes, amp]) => {
         setMelodyNotes(notes);
+        setAmplitudeData(amp);
         if (prepareProgress.result?.key) {
           setDetectedKey(prepareProgress.result.key as string);
         }
@@ -440,6 +450,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
               mode={canvasMode}
               isPlaying={isPlaying || (step === 'recording' && !recordingPaused)}
               scalePitchClasses={getScalePitchClasses(detectedKey)}
+              amplitude={amplitudeData}
               onScrub={handleScrub}
               onRegionSelect={handleRegionSelect}
             />

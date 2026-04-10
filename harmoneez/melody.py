@@ -9,7 +9,7 @@ from .utils import VELOCITY_THRESHOLD
 MIN_MELODY_DURATION = 0.08
 
 # Notes more than this many semitones from the median pitch are likely artifacts
-PITCH_OUTLIER_SEMITONES = 18
+PITCH_OUTLIER_SEMITONES = 14
 
 
 def extract_melody(vocals_path: Path) -> list[tuple[float, float, int, float]]:

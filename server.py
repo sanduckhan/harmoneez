@@ -375,6 +375,16 @@ async def _run_prepare(job: Job):
             with open(job.tmp_dir / "melody_data.json", 'w') as f:
                 json.dump(melody_json, f)
 
+            # Compute amplitude envelope for visual debugging (RMS at ~100fps)
+            hop = sr // 100  # ~10ms frames
+            envelope = []
+            for i in range(0, len(vocals_audio), hop):
+                chunk = vocals_audio[i:i+hop]
+                rms = float(np.sqrt(np.mean(chunk**2)))
+                envelope.append(round(rms, 5))
+            with open(job.tmp_dir / "amplitude.json", 'w') as f:
+                json.dump({"sr": sr, "hop": hop, "envelope": envelope}, f)
+
             on_progress("done", "Ready!", 3, 3)
 
             return {
@@ -503,6 +513,19 @@ async def get_melody_data(job_id: str):
 
 
     with open(melody_file) as f:
+        return json.load(f)
+
+
+@app.get("/api/amplitude/{job_id}")
+async def get_amplitude(job_id: str):
+    """Serve vocal amplitude envelope for visual debugging."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    amp_file = job.tmp_dir / "amplitude.json"
+    if not amp_file.is_file():
+        raise HTTPException(status_code=404, detail="Amplitude data not available")
+    with open(amp_file) as f:
         return json.load(f)
 
 

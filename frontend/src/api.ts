@@ -88,6 +88,18 @@ export async function prepareReference(jobId: string): Promise<void> {
   if (!res.ok) throw new Error(`Prepare failed: ${res.statusText}`);
 }
 
+export interface AmplitudeData {
+  sr: number;
+  hop: number;
+  envelope: number[];
+}
+
+export async function getAmplitudeData(jobId: string): Promise<AmplitudeData | null> {
+  const res = await fetch(`${BASE}/api/amplitude/${jobId}`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export async function getMelodyData(jobId: string): Promise<MelodyNote[]> {
   const res = await fetch(`${BASE}/api/melody/${jobId}`);
   if (!res.ok) return [];

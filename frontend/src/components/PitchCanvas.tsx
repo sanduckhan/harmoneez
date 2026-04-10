@@ -3,6 +3,12 @@ import type { MelodyNote, PitchSample } from '../types';
 
 export type CanvasMode = 'guide' | 'recording' | 'review';
 
+export interface AmplitudeEnvelope {
+  sr: number;
+  hop: number;
+  envelope: number[];
+}
+
 interface Props {
   melodyNotes: MelodyNote[];
   pitchSamplesRef: React.RefObject<PitchSample[]>;
@@ -10,7 +16,8 @@ interface Props {
   duration: number;
   mode: CanvasMode;
   isPlaying: boolean;
-  scalePitchClasses?: number[];  // pitch classes in the song's key (0-11)
+  scalePitchClasses?: number[];
+  amplitude?: AmplitudeEnvelope | null;  // vocal amplitude for debugging
   onScrub?: (time: number) => void;
   onRegionSelect?: (start: number, end: number) => void;
   className?: string;
@@ -71,7 +78,7 @@ function deviationColor(notes: MelodyNote[], time: number, userMidi: number): st
 
 export function PitchCanvas({
   melodyNotes, pitchSamplesRef, getTime, duration,
-  mode, isPlaying, scalePitchClasses, onScrub, onRegionSelect, className,
+  mode, isPlaying, scalePitchClasses, amplitude, onScrub, onRegionSelect, className,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
@@ -158,6 +165,39 @@ export function PitchCanvas({
       const m = Math.floor(s / 60);
       const sec = s % 60;
       ctx.fillText(`${m}:${sec.toString().padStart(2, '0')}`, x, h - 6);
+    }
+
+    // 3b. Amplitude envelope (vocal audio waveform for debugging)
+    if (amplitude && amplitude.envelope.length > 0) {
+      const frameDuration = amplitude.hop / amplitude.sr;
+      const maxAmp = Math.max(...amplitude.envelope) || 1;
+      const ampH = DRAW_H * 0.15; // use bottom 15% of canvas
+
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(45, 212, 168, 0.3)'; // teal, transparent
+      ctx.lineWidth = 1;
+
+      let started = false;
+      const startIdx = Math.max(0, Math.floor(windowStart / frameDuration));
+      const endIdx = Math.min(amplitude.envelope.length, Math.ceil(windowEnd / frameDuration));
+
+      for (let i = startIdx; i < endIdx; i++) {
+        const t = i * frameDuration;
+        const x = timeToX(t);
+        if (x < MARGIN_LEFT || x > w) continue;
+        const amp = amplitude.envelope[i] / maxAmp;
+        const y = DRAW_H - amp * ampH;
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Draw a baseline
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(45, 212, 168, 0.1)';
+      ctx.moveTo(MARGIN_LEFT, DRAW_H);
+      ctx.lineTo(w, DRAW_H);
+      ctx.stroke();
     }
 
     // 4. Selection overlay
