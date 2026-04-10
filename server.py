@@ -397,7 +397,9 @@ async def get_file(job_id: str, filename: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    file_path = job.tmp_dir / filename
+    file_path = (job.tmp_dir / filename).resolve()
+    if not file_path.is_relative_to(job.tmp_dir.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid filename")
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 

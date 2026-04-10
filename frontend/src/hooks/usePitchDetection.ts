@@ -17,15 +17,18 @@ export function usePitchDetection({
   onPitchDetected,
   getElapsedTime,
 }: UsePitchDetectionOptions) {
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const animRef = useRef<number>(0);
+  // Store callbacks in refs to avoid stale closures
+  const onPitchRef = useRef(onPitchDetected);
+  onPitchRef.current = onPitchDetected;
+  const getTimeRef = useRef(getElapsedTime);
+  getTimeRef.current = getElapsedTime;
+  const thresholdRef = useRef(clarityThreshold);
+  thresholdRef.current = clarityThreshold;
 
   useEffect(() => {
     if (!stream || !enabled) return;
 
     const audioCtx = new AudioContext();
-    audioCtxRef.current = audioCtx;
-
     const source = audioCtx.createMediaStreamSource(stream);
     const analyser = audioCtx.createAnalyser();
     analyser.fftSize = 2048;
@@ -33,29 +36,29 @@ export function usePitchDetection({
 
     const buffer = new Float32Array(analyser.fftSize);
     const detector = PitchDetector.forFloat32Array(analyser.fftSize);
+    let animFrame = 0;
 
     function detect() {
       analyser.getFloatTimeDomainData(buffer);
       const [pitch, clarity] = detector.findPitch(buffer, audioCtx.sampleRate);
 
-      const time = getElapsedTime();
+      const time = getTimeRef.current();
 
-      if (clarity >= clarityThreshold && pitch > 50 && pitch < 1500) {
+      if (clarity >= thresholdRef.current && pitch > 50 && pitch < 1500) {
         const midi = 12 * Math.log2(pitch / 440) + 69;
-        onPitchDetected({ time, hz: pitch, midi, clarity });
+        onPitchRef.current({ time, hz: pitch, midi, clarity });
       } else {
-        onPitchDetected({ time, hz: null, midi: null, clarity });
+        onPitchRef.current({ time, hz: null, midi: null, clarity });
       }
 
-      animRef.current = requestAnimationFrame(detect);
+      animFrame = requestAnimationFrame(detect);
     }
 
-    animRef.current = requestAnimationFrame(detect);
+    animFrame = requestAnimationFrame(detect);
 
     return () => {
-      cancelAnimationFrame(animRef.current);
+      cancelAnimationFrame(animFrame);
       audioCtx.close();
-      audioCtxRef.current = null;
     };
   }, [stream, enabled]);
 }

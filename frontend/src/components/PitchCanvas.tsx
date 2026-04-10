@@ -27,7 +27,6 @@ const AMBER = '#f5a623';
 const AMBER_DIM = 'rgba(245, 166, 35, 0.25)';
 const AMBER_GLOW = 'rgba(245, 166, 35, 0.08)';
 const TEAL = '#2dd4a8';
-const AMBER_ACCENT = '#f5a623';
 const RED = '#ef4444';
 const TEXT_MUTED = '#4a4660';
 const SELECTION = 'rgba(245, 166, 35, 0.12)';
@@ -44,12 +43,24 @@ function computePitchRange(notes: MelodyNote[]) {
   return { minMidi: min - 3, maxMidi: max + 3 };
 }
 
-function deviationColor(melodyNotes: MelodyNote[], time: number, userMidi: number): string {
-  const note = melodyNotes.find(n => time >= n.start_sec && time <= n.end_sec);
+// Binary search for the active melody note at a given time
+function findActiveNote(notes: MelodyNote[], time: number): MelodyNote | null {
+  let lo = 0, hi = notes.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (notes[mid].end_sec < time) lo = mid + 1;
+    else if (notes[mid].start_sec > time) hi = mid - 1;
+    else return notes[mid];
+  }
+  return null;
+}
+
+function deviationColor(notes: MelodyNote[], time: number, userMidi: number): string {
+  const note = findActiveNote(notes, time);
   if (!note) return 'rgba(139, 135, 160, 0.4)';
   const cents = Math.abs(userMidi - note.midi_pitch) * 100;
   if (cents < 20) return TEAL;
-  if (cents < 40) return AMBER_ACCENT;
+  if (cents < 40) return AMBER;
   return RED;
 }
 
@@ -61,15 +72,25 @@ export function PitchCanvas({
   const animRef = useRef<number>(0);
   const visSecsRef = useRef(DEFAULT_VISIBLE_SECONDS);
   const pitchRange = useRef(computePitchRange(melodyNotes));
-  const [selStart, setSelStart] = useState<number | null>(null);
-  const [selEnd, setSelEnd] = useState<number | null>(null);
   const isDragging = useRef(false);
+
+  // Store mutable values in refs to avoid effect dependency cascades
+  const currentTimeRef = useRef(currentTime);
+  currentTimeRef.current = currentTime;
+  const selStartRef = useRef<number | null>(null);
+  const selEndRef = useRef<number | null>(null);
+  const [, forceRender] = useState(0); // trigger re-render only when selection finalizes
+  const onScrubRef = useRef(onScrub);
+  onScrubRef.current = onScrub;
+  const onRegionSelectRef = useRef(onRegionSelect);
+  onRegionSelectRef.current = onRegionSelect;
 
   useEffect(() => {
     pitchRange.current = computePitchRange(melodyNotes);
   }, [melodyNotes]);
 
-  const render = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, t: number) => {
+  const render = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
+    const t = currentTimeRef.current;
     const DRAW_W = w - MARGIN_LEFT;
     const DRAW_H = h - MARGIN_BOTTOM;
     const VIS = visSecsRef.current;
@@ -124,10 +145,12 @@ export function PitchCanvas({
       ctx.fillText(`${m}:${sec.toString().padStart(2, '0')}`, x, h - 6);
     }
 
-    // 4. Selection overlay (review mode)
-    if (selStart !== null && selEnd !== null) {
-      const sx = timeToX(Math.min(selStart, selEnd));
-      const ex = timeToX(Math.max(selStart, selEnd));
+    // 4. Selection overlay
+    const ss = selStartRef.current;
+    const se = selEndRef.current;
+    if (ss !== null && se !== null) {
+      const sx = timeToX(Math.min(ss, se));
+      const ex = timeToX(Math.max(ss, se));
       ctx.fillStyle = SELECTION;
       ctx.fillRect(sx, 0, ex - sx, DRAW_H);
       ctx.strokeStyle = AMBER;
@@ -145,10 +168,8 @@ export function PitchCanvas({
       const x1 = timeToX(note.start_sec);
       const x2 = timeToX(note.end_sec);
       if (x2 < MARGIN_LEFT || x1 > w) continue;
-
       const y = midiToY(note.midi_pitch);
       const nw = Math.max(2, x2 - x1);
-
       ctx.beginPath();
       ctx.roundRect(x1, y - noteH / 2, nw, noteH, 2);
       ctx.fill();
@@ -158,7 +179,6 @@ export function PitchCanvas({
     // 6. User pitch trail
     const samples = pitchSamplesRef.current;
     if (samples && samples.length > 1) {
-      // Binary search for first visible sample
       let lo = 0, hi = samples.length;
       while (lo < hi) {
         const mid = (lo + hi) >> 1;
@@ -169,15 +189,12 @@ export function PitchCanvas({
       for (let i = Math.max(lo, 1); i < samples.length; i++) {
         const prev = samples[i - 1];
         const curr = samples[i];
-
         if (curr.time > windowEnd + 0.5) break;
         if (prev.midi === null || curr.midi === null) continue;
         if (curr.time - prev.time > 0.15) continue;
 
-        const color = deviationColor(melodyNotes, curr.time, curr.midi);
-
         ctx.beginPath();
-        ctx.strokeStyle = color;
+        ctx.strokeStyle = deviationColor(melodyNotes, curr.time, curr.midi);
         ctx.lineWidth = 3;
         ctx.lineCap = 'round';
         ctx.moveTo(timeToX(prev.time), midiToY(prev.midi));
@@ -188,23 +205,21 @@ export function PitchCanvas({
 
     // 7. Now-marker
     const nowX = MARGIN_LEFT + DRAW_W * NOW_FRACTION;
-    // Glow
     const grad = ctx.createLinearGradient(nowX - 30, 0, nowX + 30, 0);
     grad.addColorStop(0, 'rgba(245, 166, 35, 0)');
     grad.addColorStop(0.5, AMBER_GLOW);
     grad.addColorStop(1, 'rgba(245, 166, 35, 0)');
     ctx.fillStyle = grad;
     ctx.fillRect(nowX - 30, 0, 60, DRAW_H);
-    // Line
     ctx.beginPath();
     ctx.strokeStyle = AMBER;
     ctx.lineWidth = 2;
     ctx.moveTo(nowX, 0);
     ctx.lineTo(nowX, DRAW_H);
     ctx.stroke();
-  }, [melodyNotes, duration, selStart, selEnd]);
+  }, [melodyNotes, duration]);
 
-  // Animation loop
+  // Animation loop — stable effect, reads from refs
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -220,13 +235,15 @@ export function PitchCanvas({
     const obs = new ResizeObserver(resize);
     obs.observe(canvas);
 
+    let running = true;
     const loop = () => {
+      if (!running) return;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       const rect = canvas.getBoundingClientRect();
       ctx.save();
       ctx.scale(dpr, dpr);
-      render(ctx, rect.width, rect.height, currentTime);
+      render(ctx, rect.width, rect.height);
       ctx.restore();
 
       if (isPlaying || isDragging.current) {
@@ -234,20 +251,32 @@ export function PitchCanvas({
       }
     };
 
-    // Always draw at least once
-    loop();
-
-    if (isPlaying) {
-      animRef.current = requestAnimationFrame(loop);
-    }
+    // Draw once immediately
+    requestAnimationFrame(loop);
 
     return () => {
+      running = false;
       cancelAnimationFrame(animRef.current);
       obs.disconnect();
     };
-  }, [isPlaying, currentTime, render]);
+  }, [isPlaying, render]);
 
-  // Mouse handlers for review mode scrubbing + selection
+  // Redraw when paused and currentTime changes (e.g. scrubbing)
+  useEffect(() => {
+    if (isPlaying) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    render(ctx, rect.width, rect.height);
+    ctx.restore();
+  }, [currentTime, isPlaying, render]);
+
+  // Mouse handlers — read from refs to avoid dependency cascades
   const getTimeFromX = useCallback((clientX: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return 0;
@@ -255,44 +284,59 @@ export function PitchCanvas({
     const x = clientX - rect.left;
     const DRAW_W = rect.width - MARGIN_LEFT;
     const VIS = visSecsRef.current;
-    const windowStart = currentTime - VIS * NOW_FRACTION;
+    const windowStart = currentTimeRef.current - VIS * NOW_FRACTION;
     return windowStart + ((x - MARGIN_LEFT) / DRAW_W) * VIS;
-  }, [currentTime]);
+  }, []);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (mode !== 'review') return;
     isDragging.current = true;
     const t = getTimeFromX(e.clientX);
     if (e.shiftKey) {
-      setSelStart(t);
-      setSelEnd(t);
+      selStartRef.current = t;
+      selEndRef.current = t;
     } else {
-      onScrub?.(Math.max(0, Math.min(duration, t)));
+      onScrubRef.current?.(Math.max(0, Math.min(duration, t)));
     }
-  }, [mode, getTimeFromX, onScrub, duration]);
+  }, [mode, getTimeFromX, duration]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (!isDragging.current || mode !== 'review') return;
     const t = getTimeFromX(e.clientX);
-    if (selStart !== null) {
-      setSelEnd(t);
+    if (selStartRef.current !== null) {
+      selEndRef.current = t;
+      // Trigger redraw
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          const dpr = window.devicePixelRatio || 1;
+          const rect = canvas.getBoundingClientRect();
+          ctx.save();
+          ctx.scale(dpr, dpr);
+          render(ctx, rect.width, rect.height);
+          ctx.restore();
+        }
+      }
     } else {
-      onScrub?.(Math.max(0, Math.min(duration, t)));
+      onScrubRef.current?.(Math.max(0, Math.min(duration, t)));
     }
-  }, [mode, getTimeFromX, selStart, onScrub, duration]);
+  }, [mode, getTimeFromX, duration, render]);
 
   const handleMouseUp = useCallback(() => {
     isDragging.current = false;
-    if (selStart !== null && selEnd !== null) {
-      const s = Math.min(selStart, selEnd);
-      const e = Math.max(selStart, selEnd);
+    const ss = selStartRef.current;
+    const se = selEndRef.current;
+    if (ss !== null && se !== null) {
+      const s = Math.min(ss, se);
+      const e = Math.max(ss, se);
       if (e - s > 0.5) {
-        onRegionSelect?.(s, e);
+        onRegionSelectRef.current?.(s, e);
+        forceRender(n => n + 1);
       }
     }
-  }, [selStart, selEnd, onRegionSelect]);
+  }, []);
 
-  // Zoom with mouse wheel (review mode)
   const handleWheel = useCallback((e: React.WheelEvent) => {
     if (mode !== 'review') return;
     e.preventDefault();

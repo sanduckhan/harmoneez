@@ -77,23 +77,43 @@ export function PracticeView({ onBack }: Props) {
           setDetectedKey(prepareProgress.result.key as string);
         }
         setStep('guide');
+      }).catch(() => {
+        alert('Failed to load melody data. Please try again.');
+        setStep('upload');
       });
     }
   }, [prepareProgress, step, refJobId]);
 
-  // Audio time sync
+  // Use ref for mic stream to avoid stale closures
+  const micStreamRef = useRef<MediaStream | null>(null);
+
+  // Audio time sync — properly clean up all listeners
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    const update = () => setCurrentTime(audio.currentTime);
-    audio.addEventListener('timeupdate', update);
-    audio.addEventListener('play', () => setIsPlaying(true));
-    audio.addEventListener('pause', () => setIsPlaying(false));
-    audio.addEventListener('ended', () => { setIsPlaying(false); if (step === 'recording') stopRecording(); });
-    return () => {
-      audio.removeEventListener('timeupdate', update);
+    const onTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const onPlay = () => setIsPlaying(true);
+    const onPause = () => setIsPlaying(false);
+    const onEnded = () => {
+      setIsPlaying(false);
+      // Stop recording if it was active (use refs to avoid stale closures)
+      mediaRecorderRef.current?.stop();
+      micStreamRef.current?.getTracks().forEach(t => t.stop());
+      micStreamRef.current = null;
+      setMicStream(null);
+      setStep(prev => prev === 'recording' ? 'review' : prev);
     };
-  }, [step]);
+    audio.addEventListener('timeupdate', onTimeUpdate);
+    audio.addEventListener('play', onPlay);
+    audio.addEventListener('pause', onPause);
+    audio.addEventListener('ended', onEnded);
+    return () => {
+      audio.removeEventListener('timeupdate', onTimeUpdate);
+      audio.removeEventListener('play', onPlay);
+      audio.removeEventListener('pause', onPause);
+      audio.removeEventListener('ended', onEnded);
+    };
+  }, []);
 
   // --- Guide mode ---
   const playReference = useCallback(() => {
@@ -108,6 +128,7 @@ export function PracticeView({ onBack }: Props) {
   const startRecording = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
       setMicStream(stream);
 
       const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
@@ -135,12 +156,13 @@ export function PracticeView({ onBack }: Props) {
 
   const stopRecording = useCallback(() => {
     mediaRecorderRef.current?.stop();
-    micStream?.getTracks().forEach(t => t.stop());
+    micStreamRef.current?.getTracks().forEach(t => t.stop());
+    micStreamRef.current = null;
     setMicStream(null);
     audioRef.current?.pause();
     setIsPlaying(false);
     setStep('review');
-  }, [micStream]);
+  }, []);
 
   // Pitch detection during recording
   usePitchDetection({
@@ -212,19 +234,27 @@ export function PracticeView({ onBack }: Props) {
     }
   }, [vocalProgress]);
 
-  // Accuracy score
-  const accuracyScore = pitchSamplesRef.current.length > 0
-    ? (() => {
-        const voiced = pitchSamplesRef.current.filter(s => s.midi !== null);
-        if (voiced.length === 0) return 0;
-        const inTune = voiced.filter(s => {
-          const note = melodyNotes.find(n => s.time >= n.start_sec && s.time <= n.end_sec);
-          if (!note || s.midi === null) return false;
-          return Math.abs(s.midi - note.midi_pitch) * 100 < 20;
-        });
-        return Math.round((inTune.length / voiced.length) * 100);
-      })()
-    : 0;
+  // Accuracy score — computed once on entering review mode
+  const [accuracyScore, setAccuracyScore] = useState(0);
+  useEffect(() => {
+    if (step !== 'review') return;
+    const samples = pitchSamplesRef.current;
+    if (!samples || samples.length === 0) { setAccuracyScore(0); return; }
+    const voiced = samples.filter(s => s.midi !== null);
+    if (voiced.length === 0) { setAccuracyScore(0); return; }
+    let inTuneCount = 0;
+    for (const s of voiced) {
+      // Binary search for active note
+      let lo = 0, hi = melodyNotes.length - 1, found = false;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (melodyNotes[mid].end_sec < s.time) lo = mid + 1;
+        else if (melodyNotes[mid].start_sec > s.time) hi = mid - 1;
+        else { found = true; if (Math.abs(s.midi! - melodyNotes[mid].midi_pitch) * 100 < 20) inTuneCount++; break; }
+      }
+    }
+    setAccuracyScore(Math.round((inTuneCount / voiced.length) * 100));
+  }, [step, melodyNotes]);
 
   // Canvas mode mapping
   const canvasMode: CanvasMode =
