@@ -240,11 +240,13 @@ export function PitchCanvas({
       ctx.stroke();
     }
 
-    // 5b. Continuous pitch contour line (the actual detected pitch, not quantized)
+    // 5b. Smoothed pitch contour line
     if (pitchContour && pitchContour.contour.length > 0) {
       const fd = pitchContour.frame_duration;
-      const startIdx = Math.max(0, Math.floor(windowStart / fd));
-      const endIdx = Math.min(pitchContour.contour.length, Math.ceil(windowEnd / fd));
+      const SMOOTH = 5; // moving average window (frames)
+      const half = Math.floor(SMOOTH / 2);
+      const startIdx = Math.max(0, Math.floor(windowStart / fd) - half);
+      const endIdx = Math.min(pitchContour.contour.length, Math.ceil(windowEnd / fd) + half);
 
       ctx.beginPath();
       ctx.strokeStyle = 'rgba(245, 166, 35, 0.3)';
@@ -253,12 +255,24 @@ export function PitchCanvas({
       ctx.lineCap = 'round';
 
       let drawing = false;
-      for (let i = startIdx; i < endIdx; i++) {
-        const midi = pitchContour.contour[i];
-        if (midi === null) {
+      for (let i = startIdx + half; i < endIdx - half; i++) {
+        // Moving average over SMOOTH frames (skip if any frame in window is null)
+        let sum = 0;
+        let count = 0;
+        let hasNull = false;
+        for (let j = i - half; j <= i + half; j++) {
+          const v = pitchContour.contour[j];
+          if (v === null) { hasNull = true; break; }
+          sum += v;
+          count++;
+        }
+
+        if (hasNull || count === 0) {
           drawing = false;
           continue;
         }
+
+        const midi = sum / count;
         const t = i * fd;
         const x = timeToX(t);
         if (x < MARGIN_LEFT || x > w) { drawing = false; continue; }
