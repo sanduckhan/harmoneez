@@ -375,8 +375,30 @@ async def _run_prepare(job: Job):
             with open(job.tmp_dir / "melody_data.json", 'w') as f:
                 json.dump(melody_json, f)
 
-            # Compute amplitude envelope for visual debugging (RMS at ~100fps)
-            hop = sr // 100  # ~10ms frames
+            # Compute amplitude envelope + pitch contour for canvas display
+            import pyworld as pw
+            audio_f64 = vocals_audio.astype(np.float64)
+            f0, timeaxis = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1000.0)
+
+            # Pitch contour: frame-level F0 in MIDI (null for unvoiced)
+            pitch_contour = []
+            for i in range(len(f0)):
+                if f0[i] < 1.0:
+                    pitch_contour.append(None)
+                else:
+                    midi = 12 * np.log2(f0[i] / 440.0) + 69
+                    pitch_contour.append(round(float(midi), 2))
+
+            frame_duration = float(timeaxis[1] - timeaxis[0]) if len(timeaxis) > 1 else 0.005
+
+            with open(job.tmp_dir / "pitch_contour.json", 'w') as f:
+                json.dump({
+                    "frame_duration": frame_duration,
+                    "contour": pitch_contour,
+                }, f)
+
+            # Amplitude envelope (RMS at ~100fps)
+            hop = sr // 100
             envelope = []
             for i in range(0, len(vocals_audio), hop):
                 chunk = vocals_audio[i:i+hop]
@@ -514,6 +536,19 @@ async def get_melody_data(job_id: str):
 
     with open(melody_file) as f:
         return json.load(f)
+
+
+@app.get("/api/pitch-contour/{job_id}")
+async def get_pitch_contour(job_id: str):
+    """Serve frame-level pitch contour (MIDI values) for canvas display."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    f = job.tmp_dir / "pitch_contour.json"
+    if not f.is_file():
+        raise HTTPException(status_code=404, detail="Pitch contour not available")
+    with open(f) as fh:
+        return json.load(fh)
 
 
 @app.get("/api/amplitude/{job_id}")

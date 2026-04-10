@@ -100,6 +100,17 @@ export async function getAmplitudeData(jobId: string): Promise<AmplitudeData | n
   return res.json();
 }
 
+export interface PitchContourData {
+  frame_duration: number;
+  contour: (number | null)[];  // MIDI values, null = unvoiced
+}
+
+export async function getPitchContour(jobId: string): Promise<PitchContourData | null> {
+  const res = await fetch(`${BASE}/api/pitch-contour/${jobId}`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export async function getMelodyData(jobId: string): Promise<MelodyNote[]> {
   const res = await fetch(`${BASE}/api/melody/${jobId}`);
   if (!res.ok) return [];

@@ -9,6 +9,11 @@ export interface AmplitudeEnvelope {
   envelope: number[];
 }
 
+export interface PitchContour {
+  frame_duration: number;
+  contour: (number | null)[];
+}
+
 interface Props {
   melodyNotes: MelodyNote[];
   pitchSamplesRef: React.RefObject<PitchSample[]>;
@@ -17,7 +22,8 @@ interface Props {
   mode: CanvasMode;
   isPlaying: boolean;
   scalePitchClasses?: number[];
-  amplitude?: AmplitudeEnvelope | null;  // vocal amplitude for debugging
+  amplitude?: AmplitudeEnvelope | null;
+  pitchContour?: PitchContour | null;  // continuous pitch line from WORLD
   onScrub?: (time: number) => void;
   onRegionSelect?: (start: number, end: number) => void;
   className?: string;
@@ -78,7 +84,7 @@ function deviationColor(notes: MelodyNote[], time: number, userMidi: number): st
 
 export function PitchCanvas({
   melodyNotes, pitchSamplesRef, getTime, duration,
-  mode, isPlaying, scalePitchClasses, amplitude, onScrub, onRegionSelect, className,
+  mode, isPlaying, scalePitchClasses, amplitude, pitchContour, onScrub, onRegionSelect, className,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
@@ -213,14 +219,15 @@ export function PitchCanvas({
       ctx.strokeRect(sx, 0, ex - sx, DRAW_H);
     }
 
-    // 5. Melody guide
-    const noteH = Math.max(6, (DRAW_H / midiRange) * 0.5);
-    ctx.fillStyle = AMBER_DIM;
-    ctx.strokeStyle = 'rgba(245, 166, 35, 0.5)';
-    ctx.lineWidth = 1;
+    // 5. Melody guide — dim rectangles (note boundaries) + pitch contour (actual pitch)
+    const noteH = Math.max(4, (DRAW_H / midiRange) * 0.4);
+
+    // 5a. Dim rectangles showing detected note boundaries
+    ctx.fillStyle = 'rgba(245, 166, 35, 0.08)';
+    ctx.strokeStyle = 'rgba(245, 166, 35, 0.15)';
+    ctx.lineWidth = 0.5;
 
     for (const note of melodyNotes) {
-      // Skip non-vocal noise detections
       if (note.midi_pitch < 36 || note.midi_pitch > 84) continue;
       const x1 = timeToX(note.start_sec);
       const x2 = timeToX(note.end_sec);
@@ -230,6 +237,39 @@ export function PitchCanvas({
       ctx.beginPath();
       ctx.roundRect(x1, y - noteH / 2, nw, noteH, 2);
       ctx.fill();
+      ctx.stroke();
+    }
+
+    // 5b. Continuous pitch contour line (the actual detected pitch, not quantized)
+    if (pitchContour && pitchContour.contour.length > 0) {
+      const fd = pitchContour.frame_duration;
+      const startIdx = Math.max(0, Math.floor(windowStart / fd));
+      const endIdx = Math.min(pitchContour.contour.length, Math.ceil(windowEnd / fd));
+
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(245, 166, 35, 0.7)';
+      ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+
+      let drawing = false;
+      for (let i = startIdx; i < endIdx; i++) {
+        const midi = pitchContour.contour[i];
+        if (midi === null) {
+          drawing = false;
+          continue;
+        }
+        const t = i * fd;
+        const x = timeToX(t);
+        if (x < MARGIN_LEFT || x > w) { drawing = false; continue; }
+        const y = midiToY(midi);
+        if (!drawing) {
+          ctx.moveTo(x, y);
+          drawing = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
       ctx.stroke();
     }
 

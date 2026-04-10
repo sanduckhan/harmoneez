@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion } from 'motion/react';
 import type { MelodyNote, PitchSample, PipelineResult } from '../types';
-import { uploadFile, prepareReference, getMelodyData, getAmplitudeData, startProcessing, audioUrl } from '../api';
-import type { AmplitudeData } from '../api';
+import { uploadFile, prepareReference, getMelodyData, getAmplitudeData, getPitchContour, startProcessing, audioUrl } from '../api';
+import type { AmplitudeData, PitchContourData } from '../api';
 import { useJobProgress } from '../hooks/useJobProgress';
 import { usePitchDetection } from '../hooks/usePitchDetection';
 import { PitchCanvas } from './PitchCanvas';
@@ -34,6 +34,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   const [melodyNotes, setMelodyNotes] = useState<MelodyNote[]>([]);
   const [detectedKey, setDetectedKey] = useState<string>('C major');
   const [amplitudeData, setAmplitudeData] = useState<AmplitudeData | null>(null);
+  const [pitchContourData, setPitchContourData] = useState<PitchContourData | null>(null);
   const [refDuration, setRefDuration] = useState(0);
 
   // Audio
@@ -74,9 +75,11 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     Promise.all([
       getMelodyData(resumedSession.jobId),
       getAmplitudeData(resumedSession.jobId),
-    ]).then(([notes, amp]) => {
+      getPitchContour(resumedSession.jobId),
+    ]).then(([notes, amp, contour]) => {
       setMelodyNotes(notes);
       setAmplitudeData(amp);
+      setPitchContourData(contour);
       setStep('guide');
     }).catch(() => {
       alert('Failed to load session data.');
@@ -105,9 +108,11 @@ export function PracticeView({ onBack, resumedSession }: Props) {
       Promise.all([
         getMelodyData(refJobId),
         getAmplitudeData(refJobId),
-      ]).then(([notes, amp]) => {
+        getPitchContour(refJobId),
+      ]).then(([notes, amp, contour]) => {
         setMelodyNotes(notes);
         setAmplitudeData(amp);
+        setPitchContourData(contour);
         if (prepareProgress.result?.key) {
           setDetectedKey(prepareProgress.result.key as string);
         }
@@ -451,6 +456,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
               isPlaying={isPlaying || (step === 'recording' && !recordingPaused)}
               scalePitchClasses={getScalePitchClasses(detectedKey)}
               amplitude={amplitudeData}
+              pitchContour={pitchContourData}
               onScrub={handleScrub}
               onRegionSelect={handleRegionSelect}
             />
