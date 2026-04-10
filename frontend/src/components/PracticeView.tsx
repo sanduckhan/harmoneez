@@ -496,6 +496,28 @@ export function PracticeView({ onBack, resumedSession }: Props) {
               </>
             )}
           </div>
+
+          {/* Debug panel */}
+          {refJobId && (
+            <details className="rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] overflow-hidden">
+              <summary className="px-4 py-2 text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-widest cursor-pointer hover:text-[var(--text-secondary)] bg-[var(--bg-surface)]">
+                Debug: Audio Stems
+              </summary>
+              <div className="p-4 space-y-3">
+                <div>
+                  <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-widest">Isolated Vocals</span>
+                  <audio src={`/api/files/${refJobId}/vocals.wav`} controls className="w-full mt-1 h-8" preload="none" />
+                </div>
+                <div>
+                  <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-widest">Instrumental</span>
+                  <audio src={`/api/files/${refJobId}/instrumental.wav`} controls className="w-full mt-1 h-8" preload="none" />
+                </div>
+                <div className="text-[10px] font-mono text-[var(--text-muted)]">
+                  Key: {detectedKey} · Melody notes: {melodyNotes.length} · Duration: {refDuration.toFixed(1)}s
+                </div>
+              </div>
+            </details>
+          )}
         </div>
       )}
 
