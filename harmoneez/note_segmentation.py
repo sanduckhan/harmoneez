@@ -80,15 +80,39 @@ def f0_contour_to_notes(
         # Find split points within this segment
         splits = [seg_start]
 
-        for i in range(seg_start + 1, seg_end):
-            # Pitch jump detection
-            prev_hz = f0[i - 1]
+        # Track anchor pitch for the current note (set from initial stable frames)
+        anchor_hz = None
+        anchor_frames = 0
+        ANCHOR_SETTLE = 10  # frames to establish the anchor pitch
+
+        for i in range(seg_start, seg_end):
             curr_hz = f0[i]
-            if prev_hz > 1.0 and curr_hz > 1.0:
-                cents = abs(1200.0 * np.log2(curr_hz / prev_hz))
-                if cents > cent_threshold:
-                    splits.append(i)
-                    continue
+            if curr_hz < 1.0:
+                continue
+
+            if anchor_hz is None:
+                anchor_hz = curr_hz
+                anchor_frames = 1
+                continue
+
+            # During the settling period, update the anchor as a running mean
+            if anchor_frames < ANCHOR_SETTLE:
+                anchor_hz = (anchor_hz * anchor_frames + curr_hz) / (anchor_frames + 1)
+                anchor_frames += 1
+                continue
+
+            # Compare against the stable anchor pitch
+            drift_cents = abs(1200.0 * np.log2(curr_hz / anchor_hz))
+
+            # Also check consecutive frame jump
+            prev_hz = f0[i - 1] if i > seg_start and f0[i - 1] > 1.0 else curr_hz
+            jump_cents = abs(1200.0 * np.log2(curr_hz / prev_hz))
+
+            if drift_cents > cent_threshold or jump_cents > cent_threshold * 1.5:
+                splits.append(i)
+                anchor_hz = curr_hz
+                anchor_frames = 1
+                continue
 
             # Energy dip detection (for repeated same-pitch notes)
             if i > seg_start + 2 and i < seg_end - 2:
@@ -99,6 +123,8 @@ def f0_contour_to_notes(
                 )
                 if surround_energy > 0 and local_energy / surround_energy < energy_dip_ratio:
                     splits.append(i)
+                    anchor_hz = None
+                    anchor_frames = 0
 
         splits.append(seg_end)
 
