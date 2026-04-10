@@ -47,6 +47,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   const [recordingElapsed, setRecordingElapsed] = useState(0);
   const recordStartTimeRef = useRef(0);
   const [referenceMuted, setReferenceMuted] = useState(false);
+  const [audioSource, setAudioSource] = useState<'mix' | 'vocals' | 'instrumental'>('mix');
 
   // Recorded vocal processing
   const [vocalJobId, setVocalJobId] = useState<string | null>(null);
@@ -352,7 +353,16 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     <div className="space-y-4">
       {/* Hidden audio for reference track */}
       {refJobId && (
-        <audio ref={audioRef} src={audioUrl(refJobId)} muted={referenceMuted} preload="auto" />
+        <audio
+          ref={audioRef}
+          src={
+            audioSource === 'vocals' ? `/api/files/${refJobId}/vocals.wav` :
+            audioSource === 'instrumental' ? `/api/files/${refJobId}/instrumental.wav` :
+            audioUrl(refJobId)
+          }
+          muted={referenceMuted}
+          preload="auto"
+        />
       )}
 
       {/* Upload */}
@@ -452,20 +462,33 @@ export function PracticeView({ onBack, resumedSession }: Props) {
                   <div className="w-2.5 h-2.5 rounded-full bg-white" />
                   Record
                 </button>
-                {/* Mute toggle */}
-                <label className="flex items-center gap-2 ml-auto cursor-pointer">
-                  <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase">Audio</span>
-                  <button
-                    onClick={() => setReferenceMuted(!referenceMuted)}
-                    className={`relative w-8 h-4 rounded-full transition-all ${
-                      !referenceMuted ? 'bg-[var(--amber)]' : 'bg-[var(--bg-surface)] border border-[var(--border-highlight)]'
-                    }`}
-                  >
-                    <div className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${
-                      !referenceMuted ? 'left-[17px] bg-[var(--bg-deep)]' : 'left-0.5 bg-[var(--text-muted)]'
-                    }`} />
-                  </button>
-                </label>
+                {/* Audio source selector */}
+                <div className="flex items-center gap-1 ml-auto bg-[var(--bg-surface)] rounded border border-[var(--border)] text-[10px] font-mono overflow-hidden">
+                  {(['mix', 'vocals', 'instrumental'] as const).map((src) => (
+                    <button
+                      key={src}
+                      onClick={() => {
+                        const wasPlaying = !audioRef.current?.paused;
+                        const time = audioRef.current?.currentTime ?? 0;
+                        setAudioSource(src);
+                        // Restore playback position after source change
+                        setTimeout(() => {
+                          if (audioRef.current) {
+                            audioRef.current.currentTime = time;
+                            if (wasPlaying) audioRef.current.play();
+                          }
+                        }, 50);
+                      }}
+                      className={`px-2.5 py-1 transition-all uppercase tracking-wider ${
+                        audioSource === src
+                          ? 'bg-[var(--amber)] text-[var(--bg-deep)] font-semibold'
+                          : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                      }`}
+                    >
+                      {src === 'mix' ? 'Full' : src === 'vocals' ? 'Vocals' : 'Band'}
+                    </button>
+                  ))}
+                </div>
               </>
             )}
 
