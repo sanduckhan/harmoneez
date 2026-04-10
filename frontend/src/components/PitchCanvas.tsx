@@ -222,10 +222,10 @@ export function PitchCanvas({
     // 5. Melody guide — dim rectangles (note boundaries) + pitch contour (actual pitch)
     const noteH = Math.max(4, (DRAW_H / midiRange) * 0.4);
 
-    // 5a. Dim rectangles showing detected note boundaries
-    ctx.fillStyle = 'rgba(245, 166, 35, 0.08)';
-    ctx.strokeStyle = 'rgba(245, 166, 35, 0.15)';
-    ctx.lineWidth = 0.5;
+    // 5a. Note rectangles (full opacity)
+    ctx.fillStyle = AMBER_DIM;
+    ctx.strokeStyle = 'rgba(245, 166, 35, 0.6)';
+    ctx.lineWidth = 1;
 
     for (const note of melodyNotes) {
       if (note.midi_pitch < 36 || note.midi_pitch > 84) continue;
@@ -247,8 +247,8 @@ export function PitchCanvas({
       const endIdx = Math.min(pitchContour.contour.length, Math.ceil(windowEnd / fd));
 
       ctx.beginPath();
-      ctx.strokeStyle = 'rgba(245, 166, 35, 0.7)';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(245, 166, 35, 0.3)';
+      ctx.lineWidth = 1;
       ctx.lineJoin = 'round';
       ctx.lineCap = 'round';
 
