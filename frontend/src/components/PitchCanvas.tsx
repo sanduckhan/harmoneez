@@ -332,8 +332,9 @@ export function PitchCanvas({
       selStartRef.current = clampedT;
       selEndRef.current = clampedT;
     } else {
-      // Click to seek in any mode
+      // Click to seek in any mode — scrub then redraw
       onScrubRef.current?.(clampedT);
+      requestAnimationFrame(() => loopRef.current());
     }
   }, [mode, getTimeFromX, duration]);
 
