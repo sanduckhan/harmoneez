@@ -10,11 +10,21 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { ProgressPanel } from './components/ProgressPanel';
 import { ResultsGrid } from './components/ResultsGrid';
 import { PracticeView } from './components/PracticeView';
+import { SessionsList } from './components/SessionsList';
+import { resumeSession, getMelodyData } from './api';
 
 type AppMode = 'landing' | 'practice' | 'upload';
 
+interface ResumedSession {
+  jobId: string;
+  filename: string;
+  key: string;
+  duration: number;
+}
+
 function App() {
   const [mode, setMode] = useState<AppMode>('landing');
+  const [resumedSession, setResumedSession] = useState<ResumedSession | null>(null);
 
   // --- Upload flow state (existing) ---
   const [jobId, setJobId] = useState<string | null>(null);
@@ -84,6 +94,21 @@ function App() {
     }
   }, [progress]);
 
+  const handleResumeSession = useCallback(async (sessionId: string) => {
+    try {
+      const res = await resumeSession(sessionId);
+      setResumedSession({
+        jobId: res.job_id,
+        filename: res.filename,
+        key: res.key,
+        duration: res.duration,
+      });
+      setMode('practice');
+    } catch (e) {
+      alert(`Failed to resume session: ${e}`);
+    }
+  }, []);
+
   const resetUploadFlow = () => {
     setJobId(null); setFilename(null); setKeyInfo(null);
     setResult(null); setProcessing(false);
@@ -152,6 +177,9 @@ function App() {
                   or upload a vocal file directly →
                 </button>
               </div>
+
+              {/* Recent sessions */}
+              <SessionsList onResume={handleResumeSession} />
             </motion.div>
           )}
 
@@ -163,7 +191,10 @@ function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
             >
-              <PracticeView onBack={() => setMode('landing')} />
+              <PracticeView
+                onBack={() => { setMode('landing'); setResumedSession(null); }}
+                resumedSession={resumedSession ?? undefined}
+              />
             </motion.div>
           )}
 

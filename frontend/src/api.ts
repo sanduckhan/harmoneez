@@ -60,6 +60,31 @@ export function audioUrl(jobId: string): string {
 
 import type { MelodyNote } from './types';
 
+export interface SessionInfo {
+  id: string;
+  filename: string;
+  duration: number;
+  key: string;
+  melody_count: number;
+  created_at: number;
+}
+
+export async function getSessions(): Promise<SessionInfo[]> {
+  const res = await fetch(`${BASE}/api/sessions`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function resumeSession(sessionId: string): Promise<{ job_id: string; filename: string; duration: number; key: string }> {
+  const res = await fetch(`${BASE}/api/sessions/${sessionId}/resume`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to resume session');
+  return res.json();
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await fetch(`${BASE}/api/sessions/${sessionId}`, { method: 'DELETE' });
+}
+
 export async function prepareReference(jobId: string): Promise<void> {
   const res = await fetch(`${BASE}/api/prepare/${jobId}`, { method: 'POST' });
   if (!res.ok) throw new Error(`Prepare failed: ${res.statusText}`);

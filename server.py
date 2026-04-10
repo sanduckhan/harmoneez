@@ -25,6 +25,11 @@ from harmoneez.key_detection import detect_key, detect_key_changes, parse_key_st
 from harmoneez.pipeline import run_pipeline
 from harmoneez.utils import INTERVAL_TYPES, SUPPORTED_EXTENSIONS
 
+# ── Session persistence ───────────────────────────────────────────────────────
+
+SESSIONS_DIR = Path.home() / ".harmoneez" / "sessions"
+SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
 app = FastAPI(title="Harmoneez API")
 app.add_middleware(
     CORSMiddleware,
@@ -55,8 +60,75 @@ class Job:
 
 
 jobs: dict[str, Job] = {}
-processing_semaphore = asyncio.Semaphore(1)  # limit to 1 concurrent job
+processing_semaphore = asyncio.Semaphore(1)
 loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def save_session(job: Job, key: str = "", melody_count: int = 0):
+    """Persist a completed session to disk."""
+    session_dir = SESSIONS_DIR / job.id
+    session_dir.mkdir(exist_ok=True)
+
+    # Copy relevant files from tmp to session dir
+    for f in job.tmp_dir.iterdir():
+        dest = session_dir / f.name
+        if not dest.exists():
+            shutil.copy2(str(f), str(dest))
+
+    # Save metadata
+    meta = {
+        "id": job.id,
+        "filename": job.filename,
+        "duration": job.duration,
+        "key": key,
+        "melody_count": melody_count,
+        "created_at": job.created_at,
+        "result": job.result,
+    }
+    import json
+    with open(session_dir / "session.json", "w") as f:
+        json.dump(meta, f)
+
+
+def load_sessions() -> list[dict]:
+    """Load all saved sessions from disk."""
+    import json
+    sessions = []
+    if not SESSIONS_DIR.exists():
+        return sessions
+    for d in sorted(SESSIONS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        meta_path = d / "session.json"
+        if meta_path.is_file():
+            with open(meta_path) as f:
+                meta = json.load(f)
+                meta["session_dir"] = str(d)
+                sessions.append(meta)
+    return sessions
+
+
+def restore_session(session_id: str) -> Job | None:
+    """Restore a saved session into the active jobs dict."""
+    session_dir = SESSIONS_DIR / session_id
+    meta_path = session_dir / "session.json"
+    if not meta_path.is_file():
+        return None
+
+    import json
+    with open(meta_path) as f:
+        meta = json.load(f)
+
+    job = Job(
+        id=meta["id"],
+        input_path=session_dir / meta["filename"],
+        tmp_dir=session_dir,
+        filename=meta["filename"],
+        duration=meta.get("duration", 0),
+        status="completed",
+        created_at=meta.get("created_at", time.time()),
+        result=meta.get("result"),
+    )
+    jobs[job.id] = job
+    return job
 
 
 @app.on_event("startup")
@@ -67,11 +139,15 @@ async def startup():
 
 
 async def cleanup_old_jobs():
-    """Remove jobs older than 1 hour every 5 minutes."""
+    """Remove in-memory jobs older than 1 hour. Sessions on disk are kept."""
     while True:
         await asyncio.sleep(300)
         now = time.time()
-        expired = [jid for jid, j in jobs.items() if now - j.created_at > 3600]
+        expired = [
+            jid for jid, j in jobs.items()
+            if now - j.created_at > 3600
+            and not str(j.tmp_dir).startswith(str(SESSIONS_DIR))
+        ]
         for jid in expired:
             job = jobs.pop(jid, None)
             if job:
@@ -118,6 +194,50 @@ class DownloadRequest(BaseModel):
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/sessions")
+async def list_sessions():
+    """List all saved sessions."""
+    sessions = load_sessions()
+    return [
+        {
+            "id": s["id"],
+            "filename": s["filename"],
+            "duration": s.get("duration", 0),
+            "key": s.get("key", ""),
+            "melody_count": s.get("melody_count", 0),
+            "created_at": s.get("created_at", 0),
+        }
+        for s in sessions
+    ]
+
+
+@app.post("/api/sessions/{session_id}/resume")
+async def resume_session(session_id: str):
+    """Resume a saved session — restores the job from disk without reprocessing."""
+    job = restore_session(session_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return {
+        "job_id": job.id,
+        "filename": job.filename,
+        "duration": job.duration,
+        "key": job.result.get("key", "") if job.result else "",
+        "status": "completed",
+    }
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Delete a saved session from disk."""
+    session_dir = SESSIONS_DIR / session_id
+    if not session_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Session not found")
+    shutil.rmtree(str(session_dir), ignore_errors=True)
+    jobs.pop(session_id, None)
+    return {"status": "deleted"}
+
 
 UPLOAD_EXTENSIONS = {'.wav', '.mp3', '.webm', '.ogg'}
 
@@ -259,6 +379,8 @@ async def _run_prepare(job: Job):
             result = await asyncio.to_thread(_run)
             job.result = result
             job.status = "completed"
+            # Persist session to disk
+            save_session(job, key=result.get("key", ""), melody_count=result.get("melody_count", 0))
         except Exception as e:
             job.error = str(e)
             job.status = "failed"

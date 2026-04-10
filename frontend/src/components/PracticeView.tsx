@@ -12,12 +12,20 @@ import { formatTime } from '../utils';
 
 type FlowStep = 'upload' | 'preparing' | 'guide' | 'recording' | 'review' | 'generating' | 'results';
 
-interface Props {
-  onBack: () => void;
+interface ResumedSession {
+  jobId: string;
+  filename: string;
+  key: string;
+  duration: number;
 }
 
-export function PracticeView({ onBack }: Props) {
-  const [step, setStep] = useState<FlowStep>('upload');
+interface Props {
+  onBack: () => void;
+  resumedSession?: ResumedSession;
+}
+
+export function PracticeView({ onBack, resumedSession }: Props) {
+  const [step, setStep] = useState<FlowStep>(resumedSession ? 'preparing' : 'upload');
 
   // Reference track
   const [refJobId, setRefJobId] = useState<string | null>(null);
@@ -53,6 +61,22 @@ export function PracticeView({ onBack }: Props) {
   // Prepare progress
   const prepareProgress = useJobProgress(refJobId, step === 'preparing');
 
+  // --- Resume from saved session ---
+  useEffect(() => {
+    if (!resumedSession) return;
+    setRefJobId(resumedSession.jobId);
+    setRefFilename(resumedSession.filename);
+    setRefDuration(resumedSession.duration);
+    setDetectedKey(resumedSession.key);
+    getMelodyData(resumedSession.jobId).then((notes) => {
+      setMelodyNotes(notes);
+      setStep('guide');
+    }).catch(() => {
+      alert('Failed to load session data.');
+      setStep('upload');
+    });
+  }, [resumedSession]);
+
   // --- Upload reference ---
   const handleUploadRef = useCallback(async (file: File) => {
     setStep('preparing');
@@ -87,28 +111,40 @@ export function PracticeView({ onBack }: Props) {
   // Use ref for mic stream to avoid stale closures
   const micStreamRef = useRef<MediaStream | null>(null);
 
-  // Audio time sync — properly clean up all listeners
+  // Audio time sync — use rAF for smooth scrolling, not timeupdate events
+  const timeSyncRef = useRef<number>(0);
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    const onTimeUpdate = () => setCurrentTime(audio.currentTime);
-    const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
+
+    const onPlay = () => {
+      setIsPlaying(true);
+      // Start rAF loop for smooth time updates
+      const sync = () => {
+        if (audio.paused) return;
+        setCurrentTime(audio.currentTime);
+        timeSyncRef.current = requestAnimationFrame(sync);
+      };
+      timeSyncRef.current = requestAnimationFrame(sync);
+    };
+    const onPause = () => {
+      setIsPlaying(false);
+      cancelAnimationFrame(timeSyncRef.current);
+    };
     const onEnded = () => {
       setIsPlaying(false);
-      // Stop recording if it was active (use refs to avoid stale closures)
+      cancelAnimationFrame(timeSyncRef.current);
       mediaRecorderRef.current?.stop();
       micStreamRef.current?.getTracks().forEach(t => t.stop());
       micStreamRef.current = null;
       setMicStream(null);
       setStep(prev => prev === 'recording' ? 'review' : prev);
     };
-    audio.addEventListener('timeupdate', onTimeUpdate);
     audio.addEventListener('play', onPlay);
     audio.addEventListener('pause', onPause);
     audio.addEventListener('ended', onEnded);
     return () => {
-      audio.removeEventListener('timeupdate', onTimeUpdate);
+      cancelAnimationFrame(timeSyncRef.current);
       audio.removeEventListener('play', onPlay);
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('ended', onEnded);

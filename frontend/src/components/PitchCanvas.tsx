@@ -87,6 +87,7 @@ export function PitchCanvas({
 
   useEffect(() => {
     pitchRange.current = computePitchRange(melodyNotes);
+    console.log(`[PitchCanvas] melodyNotes: ${melodyNotes.length}, range: ${pitchRange.current.minMidi}-${pitchRange.current.maxMidi}`);
   }, [melodyNotes]);
 
   const render = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
