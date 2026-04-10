@@ -125,3 +125,19 @@ def build_scale_pitch_classes(key_name: str) -> list[int]:
 def is_in_scale(midi_pitch: int, scale_pcs: list[int]) -> bool:
     """Check if a MIDI pitch's pitch class is in the scale."""
     return (midi_pitch % 12) in scale_pcs
+
+
+NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B']
+NAME_TO_PC = {'C':0,'C#':1,'Db':1,'D':2,'D#':3,'Eb':3,'E':4,'F':5,'F#':6,'Gb':6,'G':7,'G#':8,'Ab':8,'A':9,'A#':10,'Bb':10,'B':11}
+
+
+def transpose_key_name(key_name: str, semitones: int) -> str:
+    """Transpose a key name by N semitones. e.g. transpose_key_name('Eb minor', -1) → 'D minor'"""
+    if semitones == 0:
+        return key_name
+    parts = key_name.split()
+    root = parts[0]
+    mode = parts[1] if len(parts) > 1 else "major"
+    root_pc = NAME_TO_PC.get(root, 0)
+    new_pc = (root_pc + semitones) % 12
+    return f"{NOTE_NAMES[new_pc]} {mode}"

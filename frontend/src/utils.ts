@@ -4,6 +4,23 @@ export function formatTime(s: number): string {
   return `${m}:${sec.toString().padStart(2, '0')}`;
 }
 
+// Shared note names array
+export const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+/**
+ * Binary search for the active melody note at a given time.
+ */
+export function findActiveNote(notes: { start_sec: number; end_sec: number }[], time: number): typeof notes[number] | null {
+  let lo = 0, hi = notes.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (notes[mid].end_sec < time) lo = mid + 1;
+    else if (notes[mid].start_sec > time) hi = mid - 1;
+    else return notes[mid];
+  }
+  return null;
+}
+
 // Note name to pitch class (0-11)
 const NOTE_TO_PC: Record<string, number> = {
   'C': 0, 'C#': 1, 'Db': 1,

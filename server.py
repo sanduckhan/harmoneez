@@ -24,7 +24,6 @@ from pydantic import BaseModel
 
 from harmoneez.key_detection import detect_key, detect_key_changes, parse_key_string
 from harmoneez.pipeline import run_pipeline
-from harmoneez.utils import INTERVAL_TYPES
 
 # ── Session persistence ───────────────────────────────────────────────────────
 
@@ -196,6 +195,14 @@ class DownloadRequest(BaseModel):
     intervals: list[str]
 
 
+def get_job(job_id: str) -> Job:
+    """Get a job by ID or raise 404."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/sessions")
@@ -295,9 +302,7 @@ async def upload_file(file: UploadFile):
 @app.get("/api/detect-key/{job_id}")
 async def detect_key_endpoint(job_id: str):
     """Detect the key of the uploaded audio."""
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = get_job(job_id)
 
     # Run key detection in a thread to not block
     def _detect():
@@ -319,23 +324,26 @@ async def detect_key_endpoint(job_id: str):
     }
 
 
+class PrepareRequest(BaseModel):
+    transpose: int = 0  # semitones to shift (-6 to +6)
+
+
 @app.post("/api/prepare/{job_id}")
-async def prepare_file(job_id: str):
-    """Run vocal separation + key detection + melody extraction only.
-    Used for the practice flow: prepare the reference track before recording."""
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+async def prepare_file(job_id: str, req: PrepareRequest = PrepareRequest()):
+    """Run vocal separation + pitch shift + melody extraction.
+    Accepts transpose parameter for server-side pitch shifting."""
+    job = get_job(job_id)
     if job.status == "processing":
         raise HTTPException(status_code=409, detail="Already processing")
 
     job.status = "processing"
+    job.params = {"transpose": req.transpose}
     asyncio.ensure_future(_run_prepare(job))
     return {"status": "processing", "job_id": job_id}
 
 
-async def _run_prepare(job: Job):
-    """Run only separation + key detection + melody extraction."""
+async def run_job(job: Job, runner):
+    """Generic job runner with semaphore, progress broadcasting, and error handling."""
     async with processing_semaphore:
         def on_progress(step, message, step_num, total_steps):
             job.current_step = step
@@ -345,93 +353,115 @@ async def _run_prepare(job: Job):
             if loop:
                 asyncio.run_coroutine_threadsafe(broadcast_progress(job), loop)
 
-        def _run():
-            from harmoneez.separation import separate_vocals
-            from harmoneez.key_detection import detect_key
-            import soundfile as sf_local
-
-            # Detect key on full mix first (better harmonic context than isolated vocals)
-            on_progress("detecting_key", "Detecting key...", 1, 3)
-            import numpy as np
-            raw_audio, raw_sr = sf.read(str(job.input_path))
-            if raw_audio.ndim == 2:
-                raw_audio = np.mean(raw_audio, axis=1)
-            key_name, confidence, candidates = detect_key(raw_audio.astype(np.float32), raw_sr)
-
-            on_progress("separating", "Isolating vocals...", 2, 3)
-            vocals_audio, instrumental_audio, sr = separate_vocals(job.input_path, job.tmp_dir)
-            on_progress("separating", f"Vocal track: {len(vocals_audio)/sr:.1f}s", 2, 3)
-
-            on_progress("extracting_melody", "Extracting melody...", 3, 3)
-
-            # WORLD analysis for pitch contour + note segmentation
-            import pyworld as pw
-            from harmoneez.note_segmentation import f0_contour_to_notes
-            audio_f64 = vocals_audio.astype(np.float64)
-            f0, timeaxis = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1000.0)
-
-            # Derive note rectangles from WORLD pitch contour (aligned with the contour line)
-            world_notes = f0_contour_to_notes(f0, timeaxis, vocals_audio, sr)
-
-            with open(job.tmp_dir / "melody_data.json", 'w') as f:
-                json.dump(world_notes, f)
-
-            # Pitch contour: frame-level F0 in MIDI (null for unvoiced)
-            pitch_contour = []
-            for i in range(len(f0)):
-                if f0[i] < 1.0:
-                    pitch_contour.append(None)
-                else:
-                    midi = 12 * np.log2(f0[i] / 440.0) + 69
-                    pitch_contour.append(round(float(midi), 2))
-
-            frame_duration = float(timeaxis[1] - timeaxis[0]) if len(timeaxis) > 1 else 0.005
-
-            with open(job.tmp_dir / "pitch_contour.json", 'w') as f:
-                json.dump({
-                    "frame_duration": frame_duration,
-                    "contour": pitch_contour,
-                }, f)
-
-            # Amplitude envelope (RMS at ~100fps)
-            hop = sr // 100
-            envelope = []
-            for i in range(0, len(vocals_audio), hop):
-                chunk = vocals_audio[i:i+hop]
-                rms = float(np.sqrt(np.mean(chunk**2)))
-                envelope.append(round(rms, 5))
-            with open(job.tmp_dir / "amplitude.json", 'w') as f:
-                json.dump({"sr": sr, "hop": hop, "envelope": envelope}, f)
-
-            on_progress("done", "Ready!", 3, 3)
-
-            return {
-                "key": key_name,
-                "confidence": confidence,
-                "candidates": [{"key": k, "confidence": c} for k, c in candidates],
-                "melody_count": len(world_notes),
-                "duration": len(vocals_audio) / sr,
-            }
-
         try:
-            result = await asyncio.to_thread(_run)
+            result = await asyncio.to_thread(runner, on_progress)
             job.result = result
             job.status = "completed"
-            # Persist session to disk
-            save_session(job, key=result.get("key", ""), melody_count=result.get("melody_count", 0))
+            return result
         except Exception as e:
             job.error = str(e)
             job.status = "failed"
+        finally:
+            await broadcast_progress(job)
 
-        await broadcast_progress(job)
+
+async def _run_prepare(job: Job):
+    """Run separation + key detection + optional transpose + melody extraction."""
+    def runner(on_progress):
+        from harmoneez.separation import separate_vocals
+        from harmoneez.key_detection import detect_key
+        from harmoneez.pitch_shift import pitch_shift_world, pitch_shift_librosa
+        from harmoneez.note_segmentation import f0_contour_to_notes
+        from harmoneez.utils import transpose_key_name
+        import numpy as np
+        import pyworld as pw
+
+        transpose = job.params.get("transpose", 0)
+        total_steps = 4 if transpose != 0 else 3
+
+        # Step 1: Detect key on full mix
+        on_progress("detecting_key", "Detecting key...", 1, total_steps)
+        raw_audio, raw_sr = sf.read(str(job.input_path))
+        if raw_audio.ndim == 2:
+            raw_audio = np.mean(raw_audio, axis=1)
+        key_name, confidence, candidates = detect_key(raw_audio.astype(np.float32), raw_sr)
+
+        # Step 2: Separate vocals
+        on_progress("separating", "Isolating vocals...", 2, total_steps)
+        vocals_audio, instrumental_audio, sr = separate_vocals(job.input_path, job.tmp_dir)
+        on_progress("separating", f"Vocal track: {len(vocals_audio)/sr:.1f}s", 2, total_steps)
+
+        # Step 3: Pitch shift if transpose != 0
+        if transpose != 0:
+            on_progress("transposing", f"Transposing {transpose:+d} semitones...", 3, total_steps)
+            vocals_audio = pitch_shift_world(vocals_audio, sr, transpose, f0_floor=65.0, f0_ceil=1000.0)
+            instrumental_audio = pitch_shift_librosa(instrumental_audio, sr, transpose)
+            sf.write(str(job.tmp_dir / "vocals.wav"), vocals_audio, sr)
+            sf.write(str(job.tmp_dir / "instrumental.wav"), instrumental_audio, sr)
+            key_name = transpose_key_name(key_name, transpose)
+
+        # Always create full mix from stems (transposed or not)
+        full_mix = vocals_audio + instrumental_audio
+        max_val = np.max(np.abs(full_mix))
+        if max_val > 1.0:
+            full_mix = full_mix / max_val
+        sf.write(str(job.tmp_dir / "full_mix.wav"), full_mix, sr)
+
+        # Final step: Extract melody
+        step_n = total_steps
+        on_progress("extracting_melody", "Extracting melody...", step_n, total_steps)
+
+        audio_f64 = vocals_audio.astype(np.float64)
+        f0, timeaxis = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1000.0)
+
+        world_notes = f0_contour_to_notes(f0, timeaxis, vocals_audio, sr)
+
+        with open(job.tmp_dir / "melody_data.json", 'w') as f:
+            json.dump(world_notes, f)
+
+        # Pitch contour: frame-level F0 in MIDI (null for unvoiced)
+        pitch_contour = []
+        for i in range(len(f0)):
+            if f0[i] < 1.0:
+                pitch_contour.append(None)
+            else:
+                midi = 12 * np.log2(f0[i] / 440.0) + 69
+                pitch_contour.append(round(float(midi), 2))
+
+        frame_duration = float(timeaxis[1] - timeaxis[0]) if len(timeaxis) > 1 else 0.005
+
+        with open(job.tmp_dir / "pitch_contour.json", 'w') as f:
+            json.dump({"frame_duration": frame_duration, "contour": pitch_contour}, f)
+
+        # Amplitude envelope (RMS at ~100fps)
+        hop = sr // 100
+        envelope = []
+        for i in range(0, len(vocals_audio), hop):
+            chunk = vocals_audio[i:i+hop]
+            rms = float(np.sqrt(np.mean(chunk**2)))
+            envelope.append(round(rms, 5))
+        with open(job.tmp_dir / "amplitude.json", 'w') as f:
+            json.dump({"sr": sr, "hop": hop, "envelope": envelope}, f)
+
+        on_progress("done", "Ready!", total_steps, total_steps)
+
+        return {
+            "key": key_name,
+            "confidence": confidence,
+            "candidates": [{"key": k, "confidence": c} for k, c in candidates],
+            "melody_count": len(world_notes),
+            "duration": len(vocals_audio) / sr,
+        }
+
+    result = await run_job(job, runner)
+    if result:
+        save_session(job, key=result.get("key", ""), melody_count=result.get("melody_count", 0))
 
 
 @app.post("/api/process/{job_id}")
 async def process_file(job_id: str, req: ProcessRequest):
     """Start processing. Progress is streamed via WebSocket."""
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = get_job(job_id)
     if job.status == "processing":
         raise HTTPException(status_code=409, detail="Already processing")
 
@@ -452,64 +482,45 @@ async def process_file(job_id: str, req: ProcessRequest):
 
 
 async def _run_pipeline(job: Job):
-    """Run the pipeline in a thread with progress broadcasting."""
-    async with processing_semaphore:
-        def on_progress(step, message, step_num, total_steps):
-            job.current_step = step
-            job.current_message = message
-            job.step_num = step_num
-            job.total_steps = total_steps
-            if loop:
-                asyncio.run_coroutine_threadsafe(broadcast_progress(job), loop)
+    """Run the harmony generation pipeline."""
+    def runner(on_progress):
+        params = job.params
+        result = run_pipeline(
+            input_path=job.input_path,
+            key=params.get("key"),
+            start=params.get("start"),
+            end=params.get("end"),
+            pitch_correct=params.get("pitch_correct", True),
+            intervals=params.get("intervals", "all"),
+            harmony_volume=params.get("harmony_volume", 0.7),
+            output_dir=job.tmp_dir,
+            on_progress=on_progress,
+        )
 
-        def _run():
-            params = job.params
-            return run_pipeline(
-                input_path=job.input_path,
-                key=params.get("key"),
-                start=params.get("start"),
-                end=params.get("end"),
-                pitch_correct=params.get("pitch_correct", True),
-                intervals=params.get("intervals", "all"),
-                harmony_volume=params.get("harmony_volume", 0.7),
-                output_dir=job.tmp_dir,
-                on_progress=on_progress,
-            )
+        # Convert file paths to relative URLs
+        for f in result["files"]:
+            harm_name = Path(f["harmony_path"]).name
+            mixed_name = Path(f["mixed_path"]).name
+            f["harmony_url"] = f"/api/files/{job.id}/{harm_name}"
+            f["mixed_url"] = f"/api/files/{job.id}/{mixed_name}"
 
-        try:
-            result = await asyncio.to_thread(_run)
+        if result.get("corrected_path"):
+            corr_name = Path(result["corrected_path"]).name
+            result["corrected_url"] = f"/api/files/{job.id}/{corr_name}"
 
-            # Convert file paths to relative URLs
-            for f in result["files"]:
-                harm_name = Path(f["harmony_path"]).name
-                mixed_name = Path(f["mixed_path"]).name
-                f["harmony_url"] = f"/api/files/{job.id}/{harm_name}"
-                f["mixed_url"] = f"/api/files/{job.id}/{mixed_name}"
+        if result.get("instrumental_path"):
+            inst_name = Path(result["instrumental_path"]).name
+            result["instrumental_url"] = f"/api/files/{job.id}/{inst_name}"
 
-            if result.get("corrected_path"):
-                corr_name = Path(result["corrected_path"]).name
-                result["corrected_url"] = f"/api/files/{job.id}/{corr_name}"
+        return result
 
-            if result.get("instrumental_path"):
-                inst_name = Path(result["instrumental_path"]).name
-                result["instrumental_url"] = f"/api/files/{job.id}/{inst_name}"
-
-            job.result = result
-            job.status = "completed"
-        except Exception as e:
-            job.error = str(e)
-            job.status = "failed"
-
-        # Final broadcast
-        await broadcast_progress(job)
+    await run_job(job, runner)
 
 
 @app.get("/api/results/{job_id}")
 async def get_results(job_id: str):
     """Get processing results."""
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = get_job(job_id)
 
     return {
         "status": job.status,
@@ -521,9 +532,7 @@ async def get_results(job_id: str):
 @app.get("/api/melody/{job_id}")
 async def get_melody_data(job_id: str):
     """Serve extracted melody notes as JSON for pitch guide."""
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = get_job(job_id)
 
     melody_file = job.tmp_dir / "melody_data.json"
     if not melody_file.is_file():
@@ -537,9 +546,7 @@ async def get_melody_data(job_id: str):
 @app.get("/api/pitch-contour/{job_id}")
 async def get_pitch_contour(job_id: str):
     """Serve frame-level pitch contour (MIDI values) for canvas display."""
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = get_job(job_id)
     f = job.tmp_dir / "pitch_contour.json"
     if not f.is_file():
         raise HTTPException(status_code=404, detail="Pitch contour not available")
@@ -550,9 +557,7 @@ async def get_pitch_contour(job_id: str):
 @app.get("/api/amplitude/{job_id}")
 async def get_amplitude(job_id: str):
     """Serve vocal amplitude envelope for visual debugging."""
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = get_job(job_id)
     amp_file = job.tmp_dir / "amplitude.json"
     if not amp_file.is_file():
         raise HTTPException(status_code=404, detail="Amplitude data not available")
@@ -563,9 +568,7 @@ async def get_amplitude(job_id: str):
 @app.get("/api/pitch-data/{job_id}")
 async def get_pitch_data(job_id: str):
     """Serve pitch accuracy data as JSON."""
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = get_job(job_id)
 
     pitch_file = job.tmp_dir / "pitch_data.json"
     if not pitch_file.is_file():
@@ -579,9 +582,7 @@ async def get_pitch_data(job_id: str):
 @app.get("/api/files/{job_id}/{filename}")
 async def get_file(job_id: str, filename: str):
     """Serve a generated audio file."""
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = get_job(job_id)
 
     file_path = (job.tmp_dir / filename).resolve()
     if not file_path.is_relative_to(job.tmp_dir.resolve()):
@@ -664,9 +665,7 @@ async def websocket_progress(websocket: WebSocket, job_id: str):
 @app.get("/api/audio/{job_id}")
 async def get_uploaded_audio(job_id: str):
     """Serve the original uploaded audio file (for waveform display)."""
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = get_job(job_id)
 
     return FileResponse(str(job.input_path), media_type="audio/wav", filename=job.filename)
 

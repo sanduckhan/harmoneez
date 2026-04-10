@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { motion } from 'motion/react';
 import type { MelodyNote, PitchSample, PipelineResult } from '../types';
 import { uploadFile, prepareReference, getMelodyData, getAmplitudeData, getPitchContour, startProcessing, audioUrl } from '../api';
@@ -10,9 +10,9 @@ import type { CanvasMode } from './PitchCanvas';
 import { ProgressPanel } from './ProgressPanel';
 import { ResultsGrid } from './ResultsGrid';
 import { useWebAudioPlayer } from '../hooks/useWebAudioPlayer';
-import { formatTime, getScalePitchClasses, transposeKey } from '../utils';
+import { formatTime, getScalePitchClasses, transposeKey, findActiveNote, NOTE_NAMES } from '../utils';
 
-type FlowStep = 'upload' | 'preparing' | 'guide' | 'recording' | 'review' | 'generating' | 'results';
+type FlowStep = 'upload' | 'detecting' | 'key-select' | 'processing' | 'guide' | 'recording' | 'review' | 'generating' | 'results';
 
 interface ResumedSession {
   jobId: string;
@@ -27,7 +27,7 @@ interface Props {
 }
 
 export function PracticeView({ onBack, resumedSession }: Props) {
-  const [step, setStep] = useState<FlowStep>(resumedSession ? 'preparing' : 'upload');
+  const [step, setStep] = useState<FlowStep>(resumedSession ? 'processing' : 'upload');
 
   // Reference track
   const [refJobId, setRefJobId] = useState<string | null>(null);
@@ -38,28 +38,42 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   const [amplitudeData, setAmplitudeData] = useState<AmplitudeData | null>(null);
   const [pitchContourData, setPitchContourData] = useState<PitchContourData | null>(null);
   const [refDuration, setRefDuration] = useState(0);
+  const [audioSource, setAudioSource] = useState<'mix' | 'vocals' | 'instrumental'>('mix');
 
   // Audio — Web Audio API for pitch-shifted playback
+  // key-select: original upload (pitch shifted client-side via detune)
+  // after processing: server-generated files (full_mix, vocals, instrumental)
+  const isInCanvas = step === 'guide' || step === 'recording' || step === 'review';
   const audioSrcUrl = refJobId ? (
-    audioSource === 'vocals' ? `/api/files/${refJobId}/vocals.wav` :
-    audioSource === 'instrumental' ? `/api/files/${refJobId}/instrumental.wav` :
-    audioUrl(refJobId)
+    isInCanvas ? (
+      audioSource === 'vocals' ? `/api/files/${refJobId}/vocals.wav` :
+      audioSource === 'instrumental' ? `/api/files/${refJobId}/instrumental.wav` :
+      `/api/files/${refJobId}/full_mix.wav`
+    ) : step === 'key-select' ? audioUrl(refJobId) : null
   ) : null;
 
   const [currentTime, setCurrentTime] = useState(0);
   const currentTimeRef = useRef(0);
 
+  const stepRef = useRef(step);
+  stepRef.current = step;
+
   const webAudio = useWebAudioPlayer({
     url: audioSrcUrl,
-    detune: transposeOffset * 100,
+    detune: step === 'key-select' ? transposeOffset * 100 : 0,
     onTimeUpdate: (t) => {
       currentTimeRef.current = t;
-      setCurrentTime(t);
+      // Only trigger React re-renders in key-select (for progress bar)
+      // In canvas mode, PitchCanvas reads time via getTime() — no re-render needed
+      if (stepRef.current === 'key-select') {
+        setCurrentTime(t);
+      }
     },
   });
 
   const isPlaying = webAudio.playing;
   const refDurationFromAudio = webAudio.duration;
+  const scalePCs = useMemo(() => getScalePitchClasses(detectedKey), [detectedKey]);
 
   // Recording
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
@@ -69,7 +83,6 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   const [recordingElapsed, setRecordingElapsed] = useState(0);
   const recordStartTimeRef = useRef(0);
   const recordAudioOffsetRef = useRef(0);
-  const [audioSource, setAudioSource] = useState<'mix' | 'vocals' | 'instrumental'>('mix');
 
   // Recorded vocal processing
   const [vocalJobId, setVocalJobId] = useState<string | null>(null);
@@ -81,8 +94,20 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   const [selStart, setSelStart] = useState<number | null>(null);
   const [selEnd, setSelEnd] = useState<number | null>(null);
 
-  // Prepare progress
-  const prepareProgress = useJobProgress(refJobId, step === 'preparing');
+  // Processing progress (full Demucs + transpose + melody extraction)
+  const prepareProgress = useJobProgress(refJobId, step === 'processing');
+
+  // Shared helper: load melody + amplitude + contour for a job
+  const loadSessionData = useCallback(async (jobId: string) => {
+    const [notes, amp, contour] = await Promise.all([
+      getMelodyData(jobId),
+      getAmplitudeData(jobId),
+      getPitchContour(jobId),
+    ]);
+    setMelodyNotes(notes);
+    setAmplitudeData(amp);
+    setPitchContourData(contour);
+  }, []);
 
   // --- Resume from saved session ---
   useEffect(() => {
@@ -91,55 +116,52 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     setRefFilename(resumedSession.filename);
     setRefDuration(resumedSession.duration);
     setDetectedKey(resumedSession.key);
-    Promise.all([
-      getMelodyData(resumedSession.jobId),
-      getAmplitudeData(resumedSession.jobId),
-      getPitchContour(resumedSession.jobId),
-    ]).then(([notes, amp, contour]) => {
-      setMelodyNotes(notes);
-      setAmplitudeData(amp);
-      setPitchContourData(contour);
-      setStep('guide');
-    }).catch(() => {
-      alert('Failed to load session data.');
-      setStep('upload');
-    });
-  }, [resumedSession]);
+    loadSessionData(resumedSession.jobId)
+      .then(() => setStep('guide'))
+      .catch(() => { alert('Failed to load session data.'); setStep('upload'); });
+  }, [resumedSession, loadSessionData]);
 
   // --- Upload reference ---
   const handleUploadRef = useCallback(async (file: File) => {
-    setStep('preparing');
+    setStep('detecting');
     try {
       const res = await uploadFile(file);
       setRefJobId(res.job_id);
       setRefFilename(file.name);
       setRefDuration(res.duration);
-      await prepareReference(res.job_id);
+      // Fast key detection only (no Demucs yet)
+      const { detectKey } = await import('../api');
+      const keyRes = await detectKey(res.job_id);
+      setDetectedKey(keyRes.key);
+      setTransposeOffset(0);
+      setStep('key-select');
     } catch (e) {
       alert(`Upload failed: ${e}`);
       setStep('upload');
     }
   }, []);
 
+  // --- Confirm key & start full processing ---
+  const handleConfirmKey = useCallback(async () => {
+    if (!refJobId) return;
+    setStep('processing');
+    try {
+      await prepareReference(refJobId, transposeOffset);
+    } catch (e) {
+      alert(`Processing failed: ${e}`);
+      setStep('key-select');
+    }
+  }, [refJobId, transposeOffset]);
+
   // Watch prepare completion
   useEffect(() => {
-    if (prepareProgress?.status === 'completed' && step === 'preparing' && refJobId) {
-      Promise.all([
-        getMelodyData(refJobId),
-        getAmplitudeData(refJobId),
-        getPitchContour(refJobId),
-      ]).then(([notes, amp, contour]) => {
-        setMelodyNotes(notes);
-        setAmplitudeData(amp);
-        setPitchContourData(contour);
-        if (prepareProgress.result?.key) {
-          setDetectedKey(prepareProgress.result.key as string);
-        }
-        setStep('guide');
-      }).catch(() => {
-        alert('Failed to load melody data. Please try again.');
-        setStep('upload');
-      });
+    if (prepareProgress?.status === 'completed' && step === 'processing' && refJobId) {
+      if (prepareProgress.result?.key) {
+        setDetectedKey(prepareProgress.result.key as string);
+      }
+      loadSessionData(refJobId)
+        .then(() => setStep('guide'))
+        .catch(() => { alert('Failed to load melody data.'); setStep('upload'); });
     }
   }, [prepareProgress, step, refJobId]);
 
@@ -306,14 +328,8 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     if (voiced.length === 0) { setAccuracyScore(0); return; }
     let inTuneCount = 0;
     for (const s of voiced) {
-      // Binary search for active note
-      let lo = 0, hi = melodyNotes.length - 1, found = false;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (melodyNotes[mid].end_sec < s.time) lo = mid + 1;
-        else if (melodyNotes[mid].start_sec > s.time) hi = mid - 1;
-        else { found = true; if (Math.abs(s.midi! - melodyNotes[mid].midi_pitch) * 100 < 20) inTuneCount++; break; }
-      }
+      const note = findActiveNote(melodyNotes, s.time);
+      if (note && Math.abs(s.midi! - note.midi_pitch) * 100 < 20) inTuneCount++;
     }
     setAccuracyScore(Math.round((inTuneCount / voiced.length) * 100));
   }, [step, melodyNotes]);
@@ -359,12 +375,125 @@ export function PracticeView({ onBack, resumedSession }: Props) {
         </motion.div>
       )}
 
-      {/* Preparing */}
-      {step === 'preparing' && (
+      {/* Detecting key */}
+      {step === 'detecting' && (
+        <div className="flex items-center justify-center gap-3 py-16">
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
+            className="w-5 h-5 border-2 border-[var(--amber)] border-t-transparent rounded-full"
+          />
+          <span className="text-sm font-mono text-[var(--text-secondary)]">Detecting key...</span>
+        </div>
+      )}
+
+      {/* Key selection */}
+      {step === 'key-select' && refJobId && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="space-y-6"
+        >
+          <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] p-8 text-center space-y-6">
+            <div>
+              <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-widest">Detected Key</span>
+              <p className="text-lg font-mono text-[var(--text-primary)] mt-1">{detectedKey}</p>
+            </div>
+
+            <div>
+              <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-widest">Transpose</span>
+              <div className="flex items-center justify-center gap-2 mt-2">
+                <button
+                  onClick={() => setTransposeOffset(v => Math.max(-6, v - 1))}
+                  className="w-10 h-10 flex items-center justify-center rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] text-lg font-bold text-[var(--text-secondary)] hover:text-[var(--amber)] hover:border-[var(--amber)]/50 transition-all"
+                >−</button>
+                <div className="min-w-[140px] text-center">
+                  <p className="text-xl font-mono text-[var(--amber)]">
+                    {transposeKey(detectedKey, transposeOffset)}
+                  </p>
+                  {transposeOffset !== 0 && (
+                    <p className="text-[10px] font-mono text-[var(--text-muted)]">
+                      {transposeOffset > 0 ? '+' : ''}{transposeOffset} semitone{Math.abs(transposeOffset) !== 1 ? 's' : ''}
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={() => setTransposeOffset(v => Math.min(6, v + 1))}
+                  className="w-10 h-10 flex items-center justify-center rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] text-lg font-bold text-[var(--text-secondary)] hover:text-[var(--amber)] hover:border-[var(--amber)]/50 transition-all"
+                >+</button>
+              </div>
+            </div>
+
+            {/* Transport */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => webAudio.togglePlay()}
+                  className="flex items-center gap-2 px-5 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] hover:border-[var(--amber)]/50 text-sm font-mono text-[var(--text-secondary)] transition-all"
+                >
+                  {webAudio.playing ? (
+                    <><span className="w-3 h-3 border-l-2 border-r-2 border-[var(--amber)]" /> PAUSE</>
+                  ) : (
+                    <><span className="w-0 h-0 border-l-[8px] border-l-[var(--amber)] border-y-[5px] border-y-transparent" /> PLAY</>
+                  )}
+                </button>
+                <span className="font-mono text-sm text-[var(--amber)] tabular-nums">
+                  {formatTime(currentTime)}
+                </span>
+                <span className="font-mono text-sm text-[var(--text-muted)]">/</span>
+                <span className="font-mono text-sm text-[var(--text-secondary)] tabular-nums">
+                  {formatTime(webAudio.duration)}
+                </span>
+              </div>
+              {/* Seek bar */}
+              <div
+                className="w-full h-2 bg-[var(--bg-surface)] rounded-full cursor-pointer border border-[var(--border)]"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const pct = (e.clientX - rect.left) / rect.width;
+                  webAudio.seek(pct * webAudio.duration);
+                }}
+              >
+                <div
+                  className="h-full bg-[var(--amber)] rounded-full"
+                  style={{ width: `${webAudio.duration > 0 ? Math.min(100, (currentTime / webAudio.duration) * 100) : 0}%` }}
+                />
+              </div>
+              {transposeOffset !== 0 && (
+                <p className="text-[10px] font-mono text-[var(--text-muted)] text-center">
+                  Preview speed may vary slightly due to pitch shift
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <button
+              onClick={() => { webAudio.pause(); setStep('upload'); }}
+              className="text-xs font-mono text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors uppercase tracking-wider"
+            >
+              ← Back
+            </button>
+            <button
+              onClick={() => { webAudio.pause(); handleConfirmKey(); }}
+              className="px-8 py-3 rounded-lg bg-[var(--amber)] text-[var(--bg-deep)] font-mono uppercase tracking-wider text-sm font-bold hover:shadow-[0_0_30px_var(--amber-glow)] transition-all"
+            >
+              Confirm & Process →
+            </button>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Processing (full Demucs + transpose + melody) */}
+      {step === 'processing' && (
         <div className="space-y-4">
           <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--border)]">
             <div className="w-2 h-2 rounded-full bg-[var(--amber)] shadow-[0_0_4px_var(--amber)]" />
             <span className="text-xs font-mono text-[var(--text-secondary)]">{refFilename}</span>
+            <span className="text-xs font-mono text-[var(--amber)] ml-auto">
+              {transposeKey(detectedKey, transposeOffset)}
+              {transposeOffset !== 0 && ` (${transposeOffset > 0 ? '+' : ''}${transposeOffset})`}
+            </span>
           </div>
           <ProgressPanel progress={prepareProgress} />
         </div>
@@ -378,8 +507,15 @@ export function PracticeView({ onBack, resumedSession }: Props) {
             <div className={`w-2 h-2 rounded-full ${step === 'recording' ? 'bg-[var(--red)] shadow-[0_0_6px_var(--red)]' : 'bg-[var(--teal)] shadow-[0_0_4px_var(--teal)]'}`} />
             <span className="text-xs font-mono text-[var(--text-secondary)] flex-1">{refFilename}</span>
             <span className="text-xs font-mono text-[var(--amber)]">
-              {transposeOffset === 0 ? detectedKey : `${transposeKey(detectedKey, transposeOffset)} (${transposeOffset > 0 ? '+' : ''}${transposeOffset})`}
+              {detectedKey}
+              {transposeOffset !== 0 && <span className="text-[var(--text-muted)]"> ({transposeOffset > 0 ? '+' : ''}{transposeOffset})</span>}
             </span>
+            <button
+              onClick={() => { webAudio.pause(); setStep('key-select'); }}
+              className="text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors uppercase tracking-wider"
+            >
+              Change
+            </button>
           </div>
 
           {/* Pitch canvas */}
@@ -410,10 +546,9 @@ export function PracticeView({ onBack, resumedSession }: Props) {
               pitchSamplesRef={pitchSamplesRef}
               getTime={webAudio.getTime}
               duration={refDuration || refDurationFromAudio}
-              transposeOffset={transposeOffset}
               mode={canvasMode}
               isPlaying={isPlaying || (step === 'recording' && !recordingPaused)}
-              scalePitchClasses={getScalePitchClasses(transposeKey(detectedKey, transposeOffset))}
+              scalePitchClasses={scalePCs}
               amplitude={amplitudeData}
               pitchContour={pitchContourData}
               onScrub={handleScrub}
@@ -438,21 +573,6 @@ export function PracticeView({ onBack, resumedSession }: Props) {
                   <div className="w-2.5 h-2.5 rounded-full bg-white" />
                   Record
                 </button>
-                {/* Transpose controls */}
-                <div className="flex items-center gap-1 bg-[var(--bg-surface)] rounded border border-[var(--border)] text-[10px] font-mono overflow-hidden">
-                  <button
-                    onClick={() => setTransposeOffset(v => Math.max(-6, v - 1))}
-                    className="px-2 py-1 text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors"
-                  >-</button>
-                  <span className={`px-1.5 py-1 min-w-[3ch] text-center ${transposeOffset === 0 ? 'text-[var(--text-muted)]' : 'text-[var(--amber)] font-semibold'}`}>
-                    {transposeOffset > 0 ? `+${transposeOffset}` : transposeOffset}
-                  </span>
-                  <button
-                    onClick={() => setTransposeOffset(v => Math.min(6, v + 1))}
-                    className="px-2 py-1 text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors"
-                  >+</button>
-                </div>
-
                 {/* Audio source selector */}
                 <div className="flex items-center gap-1 ml-auto bg-[var(--bg-surface)] rounded border border-[var(--border)] text-[10px] font-mono overflow-hidden">
                   {(['mix', 'vocals', 'instrumental'] as const).map((src) => (
@@ -530,9 +650,9 @@ export function PracticeView({ onBack, resumedSession }: Props) {
                   <audio src={`/api/files/${refJobId}/instrumental.wav`} controls className="w-full mt-1 h-8" preload="none" />
                 </div>
                 <div className="text-[10px] font-mono text-[var(--text-muted)]">
-                  Key: {transposeOffset === 0 ? detectedKey : transposeKey(detectedKey, transposeOffset)} · Notes: {melodyNotes.length} · Duration: {refDuration.toFixed(1)}s ·
-                  Scale: {getScalePitchClasses(transposeKey(detectedKey, transposeOffset)).map(pc =>
-                    ['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'][pc]
+                  Key: {detectedKey} · Notes: {melodyNotes.length} · Duration: {refDuration.toFixed(1)}s ·
+                  Scale: {getScalePitchClasses(detectedKey).map(pc =>
+                    NOTE_NAMES[pc]
                   ).join(' ')}
                 </div>
               </div>

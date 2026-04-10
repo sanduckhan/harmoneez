@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import type { MelodyNote, PitchSample } from '../types';
+import { findActiveNote, NOTE_NAMES } from '../utils';
 
 export type CanvasMode = 'guide' | 'recording' | 'review';
 
@@ -47,8 +48,6 @@ const RED = '#ef4444';
 const TEXT_MUTED = '#7a7690';
 const SELECTION = 'rgba(245, 166, 35, 0.12)';
 
-const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
-
 function computePitchRange(notes: MelodyNote[], offset: number = 0) {
   if (notes.length === 0) return { minMidi: 57 + offset, maxMidi: 69 + offset };
   const vocalNotes = notes.filter(n => n.midi_pitch >= 36 && n.midi_pitch <= 84);
@@ -60,18 +59,6 @@ function computePitchRange(notes: MelodyNote[], offset: number = 0) {
     if (p > max) max = p;
   }
   return { minMidi: min - 2, maxMidi: max + 2 };
-}
-
-// Binary search for the active melody note at a given time
-function findActiveNote(notes: MelodyNote[], time: number): MelodyNote | null {
-  let lo = 0, hi = notes.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (notes[mid].end_sec < time) lo = mid + 1;
-    else if (notes[mid].start_sec > time) hi = mid - 1;
-    else return notes[mid];
-  }
-  return null;
 }
 
 function deviationColor(notes: MelodyNote[], time: number, userMidi: number, offset: number = 0): string {
@@ -98,6 +85,8 @@ export function PitchCanvas({
   getTimeRef.current = getTime;
   const transposeRef = useRef(transposeOffset);
   transposeRef.current = transposeOffset;
+  const scaleRef = useRef(scalePitchClasses);
+  scaleRef.current = scalePitchClasses;
   const selStartRef = useRef<number | null>(null);
   const selEndRef = useRef<number | null>(null);
   const [, forceRender] = useState(0); // trigger re-render only when selection finalizes
@@ -106,9 +95,20 @@ export function PitchCanvas({
   const onRegionSelectRef = useRef(onRegionSelect);
   onRegionSelectRef.current = onRegionSelect;
 
+  const amplitudeMaxRef = useRef(1);
+  useEffect(() => {
+    if (amplitude && amplitude.envelope.length > 0) {
+      let max = 0;
+      for (const v of amplitude.envelope) { if (v > max) max = v; }
+      amplitudeMaxRef.current = max || 1;
+    }
+  }, [amplitude]);
+
   useEffect(() => {
     pitchRange.current = computePitchRange(melodyNotes, transposeOffset);
-  }, [melodyNotes, transposeOffset]);
+    // Redraw when transpose or scale changes
+    loopRef.current();
+  }, [melodyNotes, transposeOffset, scalePitchClasses]);
 
   const render = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
     const t = getTimeRef.current();
@@ -138,7 +138,7 @@ export function PitchCanvas({
       const y = midiToY(midi);
       const noteIdx = ((midi % 12) + 12) % 12;
       const isNatural = [0, 2, 4, 5, 7, 9, 11].includes(noteIdx);
-      const isInKey = scalePitchClasses?.includes(noteIdx) ?? false;
+      const isInKey = scaleRef.current?.includes(noteIdx) ?? false;
 
       // Highlight in-key rows
       if (isInKey) {
@@ -180,7 +180,7 @@ export function PitchCanvas({
     // 3b. Amplitude envelope (vocal audio waveform for debugging)
     if (amplitude && amplitude.envelope.length > 0) {
       const frameDuration = amplitude.hop / amplitude.sr;
-      const maxAmp = Math.max(...amplitude.envelope) || 1;
+      const maxAmp = amplitudeMaxRef.current;
       const ampH = DRAW_H * 0.15; // use bottom 15% of canvas
 
       ctx.beginPath();
@@ -401,10 +401,7 @@ export function PitchCanvas({
     }
   }, [isPlaying]);
 
-  // Redraw when scrubbing (paused — triggered by parent calling onScrub which changes the audio time)
-  const redraw = useCallback(() => loopRef.current(), []);
-
-  // Expose redraw for external triggers
+  // Redraw when paused (scrubbing or transpose change)
   useEffect(() => {
     if (!isPlaying) loopRef.current();
   }, [isPlaying]);
