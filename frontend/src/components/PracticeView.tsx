@@ -243,9 +243,19 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   });
 
   // --- Review ---
+  const debugVocalsRef = useRef<HTMLAudioElement>(null);
+
   const handleScrub = useCallback((time: number) => {
     setCurrentTime(time);
-    if (audioRef.current) audioRef.current.currentTime = time;
+    currentTimeRef.current = time;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = time;
+    }
+    // Also sync the debug vocals player
+    if (debugVocalsRef.current) {
+      debugVocalsRef.current.currentTime = time;
+    }
   }, []);
 
   const handleRegionSelect = useCallback((start: number, end: number) => {
@@ -506,15 +516,21 @@ export function PracticeView({ onBack, resumedSession }: Props) {
               </summary>
               <div className="p-4 space-y-3">
                 <div>
-                  <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-widest">Isolated Vocals</span>
-                  <audio src={`/api/files/${refJobId}/vocals.wav`} controls className="w-full mt-1 h-8" preload="none" />
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-widest">Isolated Vocals</span>
+                    <span className="text-[10px] font-mono text-[var(--text-muted)]">Click on canvas to seek here</span>
+                  </div>
+                  <audio ref={debugVocalsRef} src={`/api/files/${refJobId}/vocals.wav`} controls className="w-full h-8" preload="none" />
                 </div>
                 <div>
                   <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-widest">Instrumental</span>
                   <audio src={`/api/files/${refJobId}/instrumental.wav`} controls className="w-full mt-1 h-8" preload="none" />
                 </div>
                 <div className="text-[10px] font-mono text-[var(--text-muted)]">
-                  Key: {detectedKey} · Melody notes: {melodyNotes.length} · Duration: {refDuration.toFixed(1)}s
+                  Key: {detectedKey} · Notes: {melodyNotes.length} · Duration: {refDuration.toFixed(1)}s ·
+                  Scale: {getScalePitchClasses(detectedKey).map(pc =>
+                    ['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'][pc]
+                  ).join(' ')}
                 </div>
               </div>
             </details>

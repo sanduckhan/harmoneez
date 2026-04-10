@@ -324,14 +324,16 @@ export function PitchCanvas({
   }, []);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (mode !== 'review') return;
-    isDragging.current = true;
     const t = getTimeFromX(e.clientX);
-    if (e.shiftKey) {
-      selStartRef.current = t;
-      selEndRef.current = t;
+    const clampedT = Math.max(0, Math.min(duration, t));
+
+    if (mode === 'review' && e.shiftKey) {
+      isDragging.current = true;
+      selStartRef.current = clampedT;
+      selEndRef.current = clampedT;
     } else {
-      onScrubRef.current?.(Math.max(0, Math.min(duration, t)));
+      // Click to seek in any mode
+      onScrubRef.current?.(clampedT);
     }
   }, [mode, getTimeFromX, duration]);
 
@@ -383,7 +385,7 @@ export function PitchCanvas({
     <canvas
       ref={canvasRef}
       className={`w-full rounded-lg ${className || ''}`}
-      style={{ height: '420px', cursor: mode === 'review' ? 'crosshair' : 'default' }}
+      style={{ height: '420px', cursor: mode === 'recording' ? 'default' : 'crosshair' }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
