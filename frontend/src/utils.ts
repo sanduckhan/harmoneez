@@ -33,3 +33,22 @@ export function getScalePitchClasses(keyName: string): number[] {
   const intervals = mode === 'minor' ? MINOR_INTERVALS : MAJOR_INTERVALS;
   return intervals.map(i => (rootPc + i) % 12);
 }
+
+// Pitch class to preferred note name (for display)
+const PC_TO_NOTE = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+/**
+ * Transpose a key name by N semitones. e.g. transposeKey("Eb minor", -2) → "Db minor"
+ */
+export function transposeKey(keyName: string, semitones: number): string {
+  if (semitones === 0) return keyName;
+  const parts = keyName.split(' ');
+  const root = parts[0];
+  const mode = parts[1] ?? 'major';
+
+  const rootPc = NOTE_TO_PC[root];
+  if (rootPc === undefined) return keyName;
+
+  const newPc = ((rootPc + semitones) % 12 + 12) % 12;
+  return `${PC_TO_NOTE[newPc]} ${mode}`;
+}

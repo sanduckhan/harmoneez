@@ -9,7 +9,8 @@ import { PitchCanvas } from './PitchCanvas';
 import type { CanvasMode } from './PitchCanvas';
 import { ProgressPanel } from './ProgressPanel';
 import { ResultsGrid } from './ResultsGrid';
-import { formatTime, getScalePitchClasses } from '../utils';
+import { useWebAudioPlayer } from '../hooks/useWebAudioPlayer';
+import { formatTime, getScalePitchClasses, transposeKey } from '../utils';
 
 type FlowStep = 'upload' | 'preparing' | 'guide' | 'recording' | 'review' | 'generating' | 'results';
 
@@ -33,14 +34,32 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   const [refFilename, setRefFilename] = useState<string | null>(null);
   const [melodyNotes, setMelodyNotes] = useState<MelodyNote[]>([]);
   const [detectedKey, setDetectedKey] = useState<string>('C major');
+  const [transposeOffset, setTransposeOffset] = useState(0);
   const [amplitudeData, setAmplitudeData] = useState<AmplitudeData | null>(null);
   const [pitchContourData, setPitchContourData] = useState<PitchContourData | null>(null);
   const [refDuration, setRefDuration] = useState(0);
 
-  // Audio
-  const audioRef = useRef<HTMLAudioElement>(null);
+  // Audio — Web Audio API for pitch-shifted playback
+  const audioSrcUrl = refJobId ? (
+    audioSource === 'vocals' ? `/api/files/${refJobId}/vocals.wav` :
+    audioSource === 'instrumental' ? `/api/files/${refJobId}/instrumental.wav` :
+    audioUrl(refJobId)
+  ) : null;
+
   const [currentTime, setCurrentTime] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const currentTimeRef = useRef(0);
+
+  const webAudio = useWebAudioPlayer({
+    url: audioSrcUrl,
+    detune: transposeOffset * 100,
+    onTimeUpdate: (t) => {
+      currentTimeRef.current = t;
+      setCurrentTime(t);
+    },
+  });
+
+  const isPlaying = webAudio.playing;
+  const refDurationFromAudio = webAudio.duration;
 
   // Recording
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
@@ -50,7 +69,6 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   const [recordingElapsed, setRecordingElapsed] = useState(0);
   const recordStartTimeRef = useRef(0);
   const recordAudioOffsetRef = useRef(0);
-  const [referenceMuted, setReferenceMuted] = useState(false);
   const [audioSource, setAudioSource] = useState<'mix' | 'vocals' | 'instrumental'>('mix');
 
   // Recorded vocal processing
@@ -128,64 +146,23 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   // Use ref for mic stream to avoid stale closures
   const micStreamRef = useRef<MediaStream | null>(null);
 
-  // Audio time sync — throttled to ~15fps for UI, PitchCanvas reads ref directly
-  const timeSyncRef = useRef<number>(0);
-  const currentTimeRef = useRef(0);
-  const lastTimeUpdateRef = useRef(0);
-
+  // Watch for playback end during recording
+  const prevPlayingRef = useRef(false);
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const onPlay = () => {
-      setIsPlaying(true);
-      const sync = () => {
-        if (audio.paused) return;
-        currentTimeRef.current = audio.currentTime;
-        // Throttle React setState to ~15fps (every ~66ms)
-        const now = performance.now();
-        if (now - lastTimeUpdateRef.current > 66) {
-          setCurrentTime(audio.currentTime);
-          lastTimeUpdateRef.current = now;
-        }
-        timeSyncRef.current = requestAnimationFrame(sync);
-      };
-      timeSyncRef.current = requestAnimationFrame(sync);
-    };
-    const onPause = () => {
-      setIsPlaying(false);
-      cancelAnimationFrame(timeSyncRef.current);
-      setCurrentTime(audio.currentTime);
-    };
-    const onEnded = () => {
-      setIsPlaying(false);
-      cancelAnimationFrame(timeSyncRef.current);
+    if (prevPlayingRef.current && !isPlaying && step === 'recording') {
       setRecordingPaused(false);
       mediaRecorderRef.current?.stop();
       micStreamRef.current?.getTracks().forEach(t => t.stop());
       micStreamRef.current = null;
       setMicStream(null);
-      setStep(prev => prev === 'recording' ? 'review' : prev);
-    };
-    audio.addEventListener('play', onPlay);
-    audio.addEventListener('pause', onPause);
-    audio.addEventListener('ended', onEnded);
-    return () => {
-      cancelAnimationFrame(timeSyncRef.current);
-      audio.removeEventListener('play', onPlay);
-      audio.removeEventListener('pause', onPause);
-      audio.removeEventListener('ended', onEnded);
-    };
-  }, [refJobId]);
+      setStep('review');
+    }
+    prevPlayingRef.current = isPlaying;
+  }, [isPlaying, step]);
 
   // --- Guide mode ---
-  const playReference = useCallback(() => {
-    audioRef.current?.play();
-  }, []);
-
-  const pauseReference = useCallback(() => {
-    audioRef.current?.pause();
-  }, []);
+  const playReference = useCallback(() => webAudio.play(), [webAudio]);
+  const pauseReference = useCallback(() => webAudio.pause(), [webAudio]);
 
   // --- Recording ---
   const startRecording = useCallback(async () => {
@@ -205,14 +182,11 @@ export function PracticeView({ onBack, resumedSession }: Props) {
       pitchSamplesRef.current = [];
       recordStartTimeRef.current = Date.now();
       pausedElapsedRef.current = 0;
-      // Store the audio offset so pitch samples are in absolute song time
-      recordAudioOffsetRef.current = audioRef.current?.currentTime ?? 0;
+      recordAudioOffsetRef.current = webAudio.getTime();
       setRecordingPaused(false);
 
       // Start reference playback from current playhead position
-      if (audioRef.current) {
-        audioRef.current.play();
-      }
+      webAudio.play();
 
       setStep('recording');
     } catch {
@@ -227,14 +201,14 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     // Accumulate elapsed time before pausing
     pausedElapsedRef.current += (Date.now() - recordStartTimeRef.current) / 1000;
     mediaRecorderRef.current?.pause();
-    audioRef.current?.pause();
+    webAudio.pause();
     setRecordingPaused(true);
   }, []);
 
   const resumeRecording = useCallback(() => {
-    recordStartTimeRef.current = Date.now(); // reset wall-clock base
+    recordStartTimeRef.current = Date.now();
     mediaRecorderRef.current?.resume();
-    audioRef.current?.play();
+    webAudio.play();
     setRecordingPaused(false);
   }, []);
 
@@ -243,8 +217,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     micStreamRef.current?.getTracks().forEach(t => t.stop());
     micStreamRef.current = null;
     setMicStream(null);
-    audioRef.current?.pause();
-    setIsPlaying(false);
+    webAudio.pause();
     setRecordingPaused(false);
     setStep('review');
   }, []);
@@ -264,17 +237,11 @@ export function PracticeView({ onBack, resumedSession }: Props) {
   const debugVocalsRef = useRef<HTMLAudioElement>(null);
 
   const handleScrub = useCallback((time: number) => {
-    setCurrentTime(time);
-    currentTimeRef.current = time;
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = time;
-    }
-    // Also sync the debug vocals player
+    webAudio.seek(time);
     if (debugVocalsRef.current) {
       debugVocalsRef.current.currentTime = time;
     }
-  }, []);
+  }, [webAudio]);
 
   const handleRegionSelect = useCallback((start: number, end: number) => {
     setSelStart(start);
@@ -356,7 +323,6 @@ export function PracticeView({ onBack, resumedSession }: Props) {
     return () => {
       mediaRecorderRef.current?.stop();
       micStreamRef.current?.getTracks().forEach(t => t.stop());
-      cancelAnimationFrame(timeSyncRef.current);
     };
   }, []);
 
@@ -368,19 +334,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
 
   return (
     <div className="space-y-4">
-      {/* Hidden audio for reference track */}
-      {refJobId && (
-        <audio
-          ref={audioRef}
-          src={
-            audioSource === 'vocals' ? `/api/files/${refJobId}/vocals.wav` :
-            audioSource === 'instrumental' ? `/api/files/${refJobId}/instrumental.wav` :
-            audioUrl(refJobId)
-          }
-          muted={referenceMuted}
-          preload="auto"
-        />
-      )}
+      {/* Audio is handled by useWebAudioPlayer — no <audio> element needed */}
 
       {/* Upload */}
       {step === 'upload' && (
@@ -423,7 +377,9 @@ export function PracticeView({ onBack, resumedSession }: Props) {
           <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--border)]">
             <div className={`w-2 h-2 rounded-full ${step === 'recording' ? 'bg-[var(--red)] shadow-[0_0_6px_var(--red)]' : 'bg-[var(--teal)] shadow-[0_0_4px_var(--teal)]'}`} />
             <span className="text-xs font-mono text-[var(--text-secondary)] flex-1">{refFilename}</span>
-            <span className="text-xs font-mono text-[var(--amber)]">{detectedKey}</span>
+            <span className="text-xs font-mono text-[var(--amber)]">
+              {transposeOffset === 0 ? detectedKey : `${transposeKey(detectedKey, transposeOffset)} (${transposeOffset > 0 ? '+' : ''}${transposeOffset})`}
+            </span>
           </div>
 
           {/* Pitch canvas */}
@@ -452,11 +408,12 @@ export function PracticeView({ onBack, resumedSession }: Props) {
             <PitchCanvas
               melodyNotes={melodyNotes}
               pitchSamplesRef={pitchSamplesRef}
-              getTime={() => audioRef.current?.currentTime ?? currentTimeRef.current}
-              duration={refDuration}
+              getTime={webAudio.getTime}
+              duration={refDuration || refDurationFromAudio}
+              transposeOffset={transposeOffset}
               mode={canvasMode}
               isPlaying={isPlaying || (step === 'recording' && !recordingPaused)}
-              scalePitchClasses={getScalePitchClasses(detectedKey)}
+              scalePitchClasses={getScalePitchClasses(transposeKey(detectedKey, transposeOffset))}
               amplitude={amplitudeData}
               pitchContour={pitchContourData}
               onScrub={handleScrub}
@@ -481,23 +438,27 @@ export function PracticeView({ onBack, resumedSession }: Props) {
                   <div className="w-2.5 h-2.5 rounded-full bg-white" />
                   Record
                 </button>
+                {/* Transpose controls */}
+                <div className="flex items-center gap-1 bg-[var(--bg-surface)] rounded border border-[var(--border)] text-[10px] font-mono overflow-hidden">
+                  <button
+                    onClick={() => setTransposeOffset(v => Math.max(-6, v - 1))}
+                    className="px-2 py-1 text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors"
+                  >-</button>
+                  <span className={`px-1.5 py-1 min-w-[3ch] text-center ${transposeOffset === 0 ? 'text-[var(--text-muted)]' : 'text-[var(--amber)] font-semibold'}`}>
+                    {transposeOffset > 0 ? `+${transposeOffset}` : transposeOffset}
+                  </span>
+                  <button
+                    onClick={() => setTransposeOffset(v => Math.min(6, v + 1))}
+                    className="px-2 py-1 text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors"
+                  >+</button>
+                </div>
+
                 {/* Audio source selector */}
                 <div className="flex items-center gap-1 ml-auto bg-[var(--bg-surface)] rounded border border-[var(--border)] text-[10px] font-mono overflow-hidden">
                   {(['mix', 'vocals', 'instrumental'] as const).map((src) => (
                     <button
                       key={src}
-                      onClick={() => {
-                        const wasPlaying = !audioRef.current?.paused;
-                        const time = audioRef.current?.currentTime ?? 0;
-                        setAudioSource(src);
-                        // Restore playback position after source change
-                        setTimeout(() => {
-                          if (audioRef.current) {
-                            audioRef.current.currentTime = time;
-                            if (wasPlaying) audioRef.current.play();
-                          }
-                        }, 50);
-                      }}
+                      onClick={() => setAudioSource(src)}
                       className={`px-2.5 py-1 transition-all uppercase tracking-wider ${
                         audioSource === src
                           ? 'bg-[var(--amber)] text-[var(--bg-deep)] font-semibold'
@@ -569,8 +530,8 @@ export function PracticeView({ onBack, resumedSession }: Props) {
                   <audio src={`/api/files/${refJobId}/instrumental.wav`} controls className="w-full mt-1 h-8" preload="none" />
                 </div>
                 <div className="text-[10px] font-mono text-[var(--text-muted)]">
-                  Key: {detectedKey} · Notes: {melodyNotes.length} · Duration: {refDuration.toFixed(1)}s ·
-                  Scale: {getScalePitchClasses(detectedKey).map(pc =>
+                  Key: {transposeOffset === 0 ? detectedKey : transposeKey(detectedKey, transposeOffset)} · Notes: {melodyNotes.length} · Duration: {refDuration.toFixed(1)}s ·
+                  Scale: {getScalePitchClasses(transposeKey(detectedKey, transposeOffset)).map(pc =>
                     ['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'][pc]
                   ).join(' ')}
                 </div>

@@ -22,8 +22,9 @@ interface Props {
   mode: CanvasMode;
   isPlaying: boolean;
   scalePitchClasses?: number[];
+  transposeOffset?: number;  // semitones to shift melody/contour display
   amplitude?: AmplitudeEnvelope | null;
-  pitchContour?: PitchContour | null;  // continuous pitch line from WORLD
+  pitchContour?: PitchContour | null;
   onScrub?: (time: number) => void;
   onRegionSelect?: (start: number, end: number) => void;
   className?: string;
@@ -48,15 +49,15 @@ const SELECTION = 'rgba(245, 166, 35, 0.12)';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
 
-function computePitchRange(notes: MelodyNote[]) {
-  if (notes.length === 0) return { minMidi: 57, maxMidi: 69 };
-  // Filter to vocal range (C2=36 to C6=84) to ignore noise detections
+function computePitchRange(notes: MelodyNote[], offset: number = 0) {
+  if (notes.length === 0) return { minMidi: 57 + offset, maxMidi: 69 + offset };
   const vocalNotes = notes.filter(n => n.midi_pitch >= 36 && n.midi_pitch <= 84);
-  if (vocalNotes.length === 0) return { minMidi: 57, maxMidi: 69 };
+  if (vocalNotes.length === 0) return { minMidi: 57 + offset, maxMidi: 69 + offset };
   let min = Infinity, max = -Infinity;
   for (const n of vocalNotes) {
-    if (n.midi_pitch < min) min = n.midi_pitch;
-    if (n.midi_pitch > max) max = n.midi_pitch;
+    const p = n.midi_pitch + offset;
+    if (p < min) min = p;
+    if (p > max) max = p;
   }
   return { minMidi: min - 2, maxMidi: max + 2 };
 }
@@ -73,10 +74,10 @@ function findActiveNote(notes: MelodyNote[], time: number): MelodyNote | null {
   return null;
 }
 
-function deviationColor(notes: MelodyNote[], time: number, userMidi: number): string {
+function deviationColor(notes: MelodyNote[], time: number, userMidi: number, offset: number = 0): string {
   const note = findActiveNote(notes, time);
   if (!note) return 'rgba(139, 135, 160, 0.4)';
-  const cents = Math.abs(userMidi - note.midi_pitch) * 100;
+  const cents = Math.abs(userMidi - (note.midi_pitch + offset)) * 100;
   if (cents < 20) return TEAL;
   if (cents < 40) return AMBER;
   return RED;
@@ -84,7 +85,7 @@ function deviationColor(notes: MelodyNote[], time: number, userMidi: number): st
 
 export function PitchCanvas({
   melodyNotes, pitchSamplesRef, getTime, duration,
-  mode, isPlaying, scalePitchClasses, amplitude, pitchContour, onScrub, onRegionSelect, className,
+  mode, isPlaying, scalePitchClasses, transposeOffset = 0, amplitude, pitchContour, onScrub, onRegionSelect, className,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
@@ -92,9 +93,11 @@ export function PitchCanvas({
   const pitchRange = useRef(computePitchRange(melodyNotes));
   const isDragging = useRef(false);
 
-  // Store callbacks in refs to avoid effect dependency cascades
+  // Store values in refs to avoid effect dependency cascades
   const getTimeRef = useRef(getTime);
   getTimeRef.current = getTime;
+  const transposeRef = useRef(transposeOffset);
+  transposeRef.current = transposeOffset;
   const selStartRef = useRef<number | null>(null);
   const selEndRef = useRef<number | null>(null);
   const [, forceRender] = useState(0); // trigger re-render only when selection finalizes
@@ -104,11 +107,12 @@ export function PitchCanvas({
   onRegionSelectRef.current = onRegionSelect;
 
   useEffect(() => {
-    pitchRange.current = computePitchRange(melodyNotes);
-  }, [melodyNotes]);
+    pitchRange.current = computePitchRange(melodyNotes, transposeOffset);
+  }, [melodyNotes, transposeOffset]);
 
   const render = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
     const t = getTimeRef.current();
+    const txp = transposeRef.current;
     const DRAW_W = w - MARGIN_LEFT;
     const DRAW_H = h - MARGIN_BOTTOM;
     const VIS = visSecsRef.current;
@@ -232,7 +236,7 @@ export function PitchCanvas({
       const x1 = timeToX(note.start_sec);
       const x2 = timeToX(note.end_sec);
       if (x2 < MARGIN_LEFT || x1 > w) continue;
-      const y = midiToY(note.midi_pitch);
+      const y = midiToY(note.midi_pitch + txp);
       const nw = Math.max(2, x2 - x1);
       ctx.beginPath();
       ctx.roundRect(x1, y - noteH / 2, nw, noteH, 2);
@@ -273,10 +277,10 @@ export function PitchCanvas({
         }
 
         const midi = sum / count;
-        const t = i * fd;
-        const x = timeToX(t);
+        const ct = i * fd;
+        const x = timeToX(ct);
         if (x < MARGIN_LEFT || x > w) { drawing = false; continue; }
-        const y = midiToY(midi);
+        const y = midiToY(midi + txp);
         if (!drawing) {
           ctx.moveTo(x, y);
           drawing = true;
@@ -305,7 +309,7 @@ export function PitchCanvas({
         if (curr.time - prev.time > 0.15) continue;
 
         ctx.beginPath();
-        ctx.strokeStyle = deviationColor(melodyNotes, curr.time, curr.midi);
+        ctx.strokeStyle = deviationColor(melodyNotes, curr.time, curr.midi, txp);
         ctx.lineWidth = 3;
         ctx.lineCap = 'round';
         ctx.moveTo(timeToX(prev.time), midiToY(prev.midi));
