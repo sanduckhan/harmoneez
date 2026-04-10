@@ -206,9 +206,8 @@ export function PracticeView({ onBack, resumedSession }: Props) {
       pausedElapsedRef.current = 0;
       setRecordingPaused(false);
 
-      // Start reference playback
+      // Start reference playback from current playhead position
       if (audioRef.current) {
-        audioRef.current.currentTime = 0;
         audioRef.current.play();
       }
 
