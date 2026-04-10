@@ -94,8 +94,11 @@ def run_pipeline(
         progress("detecting_key", f"Using provided key: {confirmed_key}", 2, total_steps)
     else:
         progress("detecting_key", "Detecting song key...", 2, total_steps)
-        confirmed_key, confidence, candidates = detect_key(vocals_audio, sr)
-        has_key_change = detect_key_changes(vocals_audio, sr, confirmed_key)
+        # Detect key on the original full mix (better harmonic context than isolated vocals)
+        import librosa
+        raw_audio, raw_sr = librosa.load(str(input_path), sr=None, mono=True)
+        confirmed_key, confidence, candidates = detect_key(raw_audio.astype(np.float32), raw_sr)
+        has_key_change = detect_key_changes(raw_audio.astype(np.float32), raw_sr, confirmed_key)
         if has_key_change:
             progress("detecting_key", f"Key change detected. Using {confirmed_key}", 2, total_steps)
         else:

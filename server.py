@@ -352,12 +352,17 @@ async def _run_prepare(job: Job):
         
             import soundfile as sf_local
 
-            on_progress("separating", "Isolating vocals...", 1, 3)
-            vocals_audio, instrumental_audio, sr = separate_vocals(job.input_path, job.tmp_dir)
-            on_progress("separating", f"Vocal track: {len(vocals_audio)/sr:.1f}s", 1, 3)
+            # Detect key on full mix first (better harmonic context than isolated vocals)
+            on_progress("detecting_key", "Detecting key...", 1, 3)
+            import numpy as np
+            raw_audio, raw_sr = sf.read(str(job.input_path))
+            if raw_audio.ndim == 2:
+                raw_audio = np.mean(raw_audio, axis=1)
+            key_name, confidence, candidates = detect_key(raw_audio.astype(np.float32), raw_sr)
 
-            on_progress("detecting_key", "Detecting key...", 2, 3)
-            key_name, confidence, candidates = detect_key(vocals_audio, sr)
+            on_progress("separating", "Isolating vocals...", 2, 3)
+            vocals_audio, instrumental_audio, sr = separate_vocals(job.input_path, job.tmp_dir)
+            on_progress("separating", f"Vocal track: {len(vocals_audio)/sr:.1f}s", 2, 3)
 
             on_progress("extracting_melody", "Extracting melody...", 3, 3)
             vocals_path = job.tmp_dir / "vocals.wav"
