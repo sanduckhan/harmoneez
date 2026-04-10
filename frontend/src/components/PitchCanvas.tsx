@@ -35,15 +35,15 @@ const DEFAULT_VISIBLE_SECONDS = 12;
 const NOW_FRACTION = 0.7;
 
 const BG = '#06060a';
-const GRID_MAJOR = 'rgba(42, 42, 64, 0.5)';
-const GRID_MINOR = 'rgba(30, 30, 48, 0.25)';
+const GRID_MAJOR = 'rgba(70, 70, 100, 0.5)';
+const GRID_MINOR = 'rgba(50, 50, 75, 0.3)';
 const AMBER = '#f5a623';
 const AMBER_DIM = 'rgba(245, 166, 35, 0.25)';
-const IN_KEY_ROW = 'rgba(245, 166, 35, 0.04)';  // subtle highlight for in-key rows
+const IN_KEY_ROW = 'rgba(245, 166, 35, 0.07)';  // subtle highlight for in-key rows
 const AMBER_GLOW = 'rgba(245, 166, 35, 0.08)';
 const TEAL = '#2dd4a8';
 const RED = '#ef4444';
-const TEXT_MUTED = '#4a4660';
+const TEXT_MUTED = '#7a7690';
 const SELECTION = 'rgba(245, 166, 35, 0.12)';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
@@ -153,7 +153,7 @@ export function PitchCanvas({
       // Note label — highlight in-key notes
       const octave = Math.floor(midi / 12) - 1;
       if (isNatural || isInKey) {
-        ctx.fillStyle = isInKey ? 'rgba(245, 166, 35, 0.5)' : TEXT_MUTED;
+        ctx.fillStyle = isInKey ? 'rgba(245, 166, 35, 0.7)' : TEXT_MUTED;
         ctx.fillText(`${NOTE_NAMES[noteIdx]}${octave}`, MARGIN_LEFT - 4, y);
       }
     }
@@ -180,7 +180,7 @@ export function PitchCanvas({
       const ampH = DRAW_H * 0.15; // use bottom 15% of canvas
 
       ctx.beginPath();
-      ctx.strokeStyle = 'rgba(45, 212, 168, 0.3)'; // teal, transparent
+      ctx.strokeStyle = 'rgba(45, 212, 168, 0.5)';
       ctx.lineWidth = 1;
 
       let started = false;
