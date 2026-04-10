@@ -58,6 +58,24 @@ export function audioUrl(jobId: string): string {
   return `${BASE}/api/audio/${jobId}`;
 }
 
+export async function prepareReference(jobId: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/prepare/${jobId}`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Prepare failed: ${res.statusText}`);
+}
+
+export interface MelodyNote {
+  start_sec: number;
+  end_sec: number;
+  midi_pitch: number;
+  velocity: number;
+}
+
+export async function getMelodyData(jobId: string): Promise<MelodyNote[]> {
+  const res = await fetch(`${BASE}/api/melody/${jobId}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
 export interface PitchFrame {
   time: number;
   actual_hz: number | null;

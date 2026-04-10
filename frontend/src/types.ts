@@ -56,6 +56,20 @@ export const ALL_KEYS = [
   'Bb major', 'Bb minor', 'B major', 'B minor',
 ];
 
+export interface MelodyNote {
+  start_sec: number;
+  end_sec: number;
+  midi_pitch: number;
+  velocity: number;
+}
+
+export interface PitchSample {
+  time: number;
+  hz: number | null;
+  midi: number | null;
+  clarity: number;
+}
+
 export const INTERVAL_TYPES = [
   '3rd-above', '3rd-below', '5th', '6th', 'octave',
   'unison', 'drone-root', 'drone-5th',

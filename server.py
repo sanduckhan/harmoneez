@@ -194,6 +194,78 @@ async def detect_key_endpoint(job_id: str):
     }
 
 
+@app.post("/api/prepare/{job_id}")
+async def prepare_file(job_id: str):
+    """Run vocal separation + key detection + melody extraction only.
+    Used for the practice flow: prepare the reference track before recording."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status == "processing":
+        raise HTTPException(status_code=409, detail="Already processing")
+
+    job.status = "processing"
+    asyncio.ensure_future(_run_prepare(job))
+    return {"status": "processing", "job_id": job_id}
+
+
+async def _run_prepare(job: Job):
+    """Run only separation + key detection + melody extraction."""
+    async with processing_semaphore:
+        def on_progress(step, message, step_num, total_steps):
+            job.current_step = step
+            job.current_message = message
+            job.step_num = step_num
+            job.total_steps = total_steps
+            if loop:
+                asyncio.run_coroutine_threadsafe(broadcast_progress(job), loop)
+
+        def _run():
+            from harmoneez.separation import separate_vocals
+            from harmoneez.key_detection import detect_key
+            from harmoneez.melody import extract_melody
+            import json
+            import soundfile as sf_local
+
+            on_progress("separating", "Isolating vocals...", 1, 3)
+            vocals_audio, instrumental_audio, sr = separate_vocals(job.input_path, job.tmp_dir)
+            on_progress("separating", f"Vocal track: {len(vocals_audio)/sr:.1f}s", 1, 3)
+
+            on_progress("detecting_key", "Detecting key...", 2, 3)
+            key_name, confidence, candidates = detect_key(vocals_audio, sr)
+
+            on_progress("extracting_melody", "Extracting melody...", 3, 3)
+            vocals_path = job.tmp_dir / "vocals.wav"
+            melody_notes = extract_melody(vocals_path)
+
+            melody_json = [
+                {"start_sec": s, "end_sec": e, "midi_pitch": p, "velocity": round(v, 3)}
+                for s, e, p, v in melody_notes
+            ]
+            with open(job.tmp_dir / "melody_data.json", 'w') as f:
+                json.dump(melody_json, f)
+
+            on_progress("done", "Ready!", 3, 3)
+
+            return {
+                "key": key_name,
+                "confidence": confidence,
+                "candidates": [{"key": k, "confidence": c} for k, c in candidates],
+                "melody_count": len(melody_notes),
+                "duration": len(vocals_audio) / sr,
+            }
+
+        try:
+            result = await asyncio.to_thread(_run)
+            job.result = result
+            job.status = "completed"
+        except Exception as e:
+            job.error = str(e)
+            job.status = "failed"
+
+        await broadcast_progress(job)
+
+
 @app.post("/api/process/{job_id}")
 async def process_file(job_id: str, req: ProcessRequest):
     """Start processing. Progress is streamed via WebSocket."""
@@ -284,6 +356,22 @@ async def get_results(job_id: str):
         "result": job.result,
         "error": job.error,
     }
+
+
+@app.get("/api/melody/{job_id}")
+async def get_melody_data(job_id: str):
+    """Serve extracted melody notes as JSON for pitch guide."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    melody_file = job.tmp_dir / "melody_data.json"
+    if not melody_file.is_file():
+        raise HTTPException(status_code=404, detail="Melody data not available")
+
+    import json
+    with open(melody_file) as f:
+        return json.load(f)
 
 
 @app.get("/api/pitch-data/{job_id}")
