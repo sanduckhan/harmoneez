@@ -326,6 +326,7 @@ async def detect_key_endpoint(job_id: str):
 
 class PrepareRequest(BaseModel):
     transpose: int = 0  # semitones to shift (-6 to +6)
+    key: str = ''       # pre-detected key from key-select page
 
 
 @app.post("/api/prepare/{job_id}")
@@ -337,7 +338,7 @@ async def prepare_file(job_id: str, req: PrepareRequest = PrepareRequest()):
         raise HTTPException(status_code=409, detail="Already processing")
 
     job.status = "processing"
-    job.params = {"transpose": req.transpose}
+    job.params = {"transpose": req.transpose, "key": req.key}
     asyncio.ensure_future(_run_prepare(job))
     return {"status": "processing", "job_id": job_id}
 
@@ -369,38 +370,56 @@ async def _run_prepare(job: Job):
     """Run separation + key detection + optional transpose + melody extraction."""
     def runner(on_progress):
         from harmoneez.separation import separate_vocals
-        from harmoneez.key_detection import detect_key
-        from harmoneez.pitch_shift import pitch_shift_world, pitch_shift_librosa
+        from harmoneez.pitch_shift import pitch_shift_librosa
         from harmoneez.note_segmentation import f0_contour_to_notes
         from harmoneez.utils import transpose_key_name
         import numpy as np
         import pyworld as pw
 
         transpose = job.params.get("transpose", 0)
-        total_steps = 4 if transpose != 0 else 3
+        key_name = job.params.get("key", "")
+        total_steps = 5 if transpose != 0 else 2
 
-        # Step 1: Detect key on full mix
-        on_progress("detecting_key", "Detecting key...", 1, total_steps)
-        raw_audio, raw_sr = sf.read(str(job.input_path))
-        if raw_audio.ndim == 2:
-            raw_audio = np.mean(raw_audio, axis=1)
-        key_name, confidence, candidates = detect_key(raw_audio.astype(np.float32), raw_sr)
+        step = 0
 
-        # Step 2: Separate vocals
-        on_progress("separating", "Isolating vocals...", 2, total_steps)
+        # Step 1: Separate vocals (the long one)
+        step += 1
+        duration_s = job.duration
+        estimate = max(30, int(duration_s * 0.35))
+        on_progress("separating", f"Isolating vocals... (~{estimate}s)", step, total_steps)
         vocals_audio, instrumental_audio, sr = separate_vocals(job.input_path, job.tmp_dir)
-        on_progress("separating", f"Vocal track: {len(vocals_audio)/sr:.1f}s", 2, total_steps)
 
-        # Step 3: Pitch shift if transpose != 0
+        # Steps 2-4: Pitch shift if transpose != 0
         if transpose != 0:
-            on_progress("transposing", f"Transposing {transpose:+d} semitones...", 3, total_steps)
-            vocals_audio = pitch_shift_world(vocals_audio, sr, transpose, f0_floor=65.0, f0_ceil=1000.0)
+            # Step 2: Analyze vocal pitch (WORLD harvest + cheaptrick + d4c)
+            step += 1
+            on_progress("transposing", "Analyzing vocal pitch...", step, total_steps)
+            audio_f64 = vocals_audio.astype(np.float64)
+            f0_v, ta_v = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1000.0)
+            sp_v = pw.cheaptrick(audio_f64, f0_v, ta_v, sr)
+            ap_v = pw.d4c(audio_f64, f0_v, ta_v, sr)
+
+            # Step 3: Transpose vocals (synthesis)
+            step += 1
+            on_progress("transposing", "Transposing vocals...", step, total_steps)
+            f0_shifted = f0_v * (2.0 ** (transpose / 12.0))
+            vocals_shifted = pw.synthesize(f0_shifted, sp_v, ap_v, sr)
+            if len(vocals_shifted) > len(vocals_audio):
+                vocals_shifted = vocals_shifted[:len(vocals_audio)]
+            elif len(vocals_shifted) < len(vocals_audio):
+                vocals_shifted = np.pad(vocals_shifted, (0, len(vocals_audio) - len(vocals_shifted)))
+            vocals_audio = vocals_shifted.astype(np.float32)
+
+            # Step 4: Transpose instrumental
+            step += 1
+            on_progress("transposing", "Transposing instrumental...", step, total_steps)
             instrumental_audio = pitch_shift_librosa(instrumental_audio, sr, transpose)
+
             sf.write(str(job.tmp_dir / "vocals.wav"), vocals_audio, sr)
             sf.write(str(job.tmp_dir / "instrumental.wav"), instrumental_audio, sr)
-            key_name = transpose_key_name(key_name, transpose)
+            key_name = transpose_key_name(key_name, transpose) if key_name else key_name
 
-        # Always create full mix from stems (transposed or not)
+        # Always create full mix from stems
         full_mix = vocals_audio + instrumental_audio
         max_val = np.max(np.abs(full_mix))
         if max_val > 1.0:
@@ -408,8 +427,8 @@ async def _run_prepare(job: Job):
         sf.write(str(job.tmp_dir / "full_mix.wav"), full_mix, sr)
 
         # Final step: Extract melody
-        step_n = total_steps
-        on_progress("extracting_melody", "Extracting melody...", step_n, total_steps)
+        step += 1
+        on_progress("extracting_melody", "Extracting melody...", step, total_steps)
 
         audio_f64 = vocals_audio.astype(np.float64)
         f0, timeaxis = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1000.0)
@@ -447,8 +466,6 @@ async def _run_prepare(job: Job):
 
         return {
             "key": key_name,
-            "confidence": confidence,
-            "candidates": [{"key": k, "confidence": c} for k, c in candidates],
             "melody_count": len(world_notes),
             "duration": len(vocals_audio) / sr,
         }

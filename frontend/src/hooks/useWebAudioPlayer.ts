@@ -56,10 +56,15 @@ export function useWebAudioPlayer({ url, detune, onTimeUpdate }: UseWebAudioPlay
 
     stopCurrentSource();
 
-    const ctx = audioCtxRef.current ?? new AudioContext();
-    audioCtxRef.current = ctx;
+    // Create AudioContext if needed (some browsers need this from user gesture,
+    // but decoding doesn't play audio so this is usually fine)
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new AudioContext();
+    }
+    const ctx = audioCtxRef.current;
 
-    fetch(url)
+    const controller = new AbortController();
+    fetch(url, { signal: controller.signal })
       .then(r => r.arrayBuffer())
       .then(ab => ctx.decodeAudioData(ab))
       .then(buffer => {
@@ -75,13 +80,21 @@ export function useWebAudioPlayer({ url, detune, onTimeUpdate }: UseWebAudioPlay
           onTimeUpdateRef.current?.(pos);
         }
       })
-      .catch(() => setLoading(false));
+      .catch((e) => {
+        if (e?.name !== 'AbortError') {
+          setLoading(false);
+        }
+      });
+
+    return () => controller.abort();
   }, [url]);
 
   function startSource(offset: number) {
     const ctx = audioCtxRef.current;
     const buffer = bufferRef.current;
-    if (!ctx || !buffer) return;
+    if (!ctx || !buffer) {
+      return;
+    }
     if (ctx.state === 'suspended') ctx.resume();
 
     const id = ++sourceIdRef.current;
@@ -158,11 +171,11 @@ export function useWebAudioPlayer({ url, detune, onTimeUpdate }: UseWebAudioPlay
     }
   }, [detune]);
 
-  // Cleanup
+  // Cleanup — stop playback but don't close the AudioContext
+  // (closing is permanent and breaks React StrictMode double-invocation)
   useEffect(() => {
     return () => {
       stopCurrentSource();
-      audioCtxRef.current?.close();
     };
   }, []);
 

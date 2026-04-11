@@ -83,11 +83,11 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await fetch(`${BASE}/api/sessions/${sessionId}`, { method: 'DELETE' });
 }
 
-export async function prepareReference(jobId: string, transpose: number = 0): Promise<void> {
+export async function prepareReference(jobId: string, transpose: number = 0, key: string = ''): Promise<void> {
   const res = await fetch(`${BASE}/api/prepare/${jobId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ transpose }),
+    body: JSON.stringify({ transpose, key }),
   });
   if (!res.ok) throw new Error(`Prepare failed: ${res.statusText}`);
 }
