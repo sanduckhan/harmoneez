@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { detectKey, prepareReference, resumeSession, audioUrl } from '../api';
 import { useJobProgress } from '../hooks/useJobProgress';
@@ -7,68 +7,73 @@ import { useWebAudioPlayer } from '../hooks/useWebAudioPlayer';
 import { ProgressPanel } from '../components/ProgressPanel';
 import { formatTime, transposeKey } from '../utils';
 
-export function KeySelectPage() {
+export function SongPage() {
   const navigate = useNavigate();
-  const { jobId } = useParams<{ jobId: string }>();
+  const { id } = useParams<{ id: string }>();
+  const location = useLocation();
 
+  const [filename, setFilename] = useState<string | null>(
+    (location.state as { filename?: string })?.filename ?? null
+  );
   const [detectedKey, setDetectedKey] = useState<string | null>(null);
   const [transposeOffset, setTransposeOffset] = useState(0);
   const [detecting, setDetecting] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
 
-  const progress = useJobProgress(jobId ?? null, processing);
+  const progress = useJobProgress(id ?? null, processing);
 
   const webAudio = useWebAudioPlayer({
-    url: jobId ? audioUrl(jobId) : null,
+    url: id ? audioUrl(id) : null,
     detune: transposeOffset * 100,
     onTimeUpdate: (t) => setCurrentTime(t),
   });
 
   // Detect key on mount — try resumeSession first (restores from disk), fall back to direct detect
   useEffect(() => {
-    if (!jobId) return;
+    if (!id) return;
     setDetecting(true);
 
-    // Ensure job is in server memory, then detect key
     const ensureJobAndDetect = async () => {
-      // Try to restore from disk (silent fail if it's a fresh upload — job already in memory)
-      try { await resumeSession(jobId); } catch {}
-      const res = await detectKey(jobId);
+      try {
+        const session = await resumeSession(id);
+        setFilename(session.filename);
+      } catch {}
+      const res = await detectKey(id);
       setDetectedKey(res.key);
       setDetecting(false);
     };
 
     ensureJobAndDetect().catch(() => {
       alert('Key detection failed');
-      navigate('/practice');
+      navigate('/');
     });
-  }, [jobId, navigate]);
+  }, [id, navigate]);
 
   // Watch processing completion
   useEffect(() => {
     if (progress?.status === 'completed' && processing) {
       setProcessing(false);
-      navigate(`/practice/${jobId}`, { replace: true });
+      navigate(`/song/${id}/practice`, { replace: true });
     }
     if (progress?.status === 'failed' && processing) {
       setProcessing(false);
       alert('Processing failed: ' + (progress.error || 'Unknown error'));
     }
-  }, [progress, processing, jobId, navigate]);
+  }, [progress, processing, id, navigate]);
 
   const handleConfirm = useCallback(async () => {
-    if (!jobId) return;
+    if (!id) return;
     webAudio.pause();
     setProcessing(true);
     try {
       const transposedKey = detectedKey ? transposeKey(detectedKey, transposeOffset) : '';
-      await prepareReference(jobId, transposeOffset, transposedKey);
+      await prepareReference(id, transposeOffset, transposedKey);
     } catch (e) {
       alert(`Processing failed: ${e}`);
       setProcessing(false);
     }
-  }, [jobId, transposeOffset, detectedKey, webAudio]);
+  }, [id, transposeOffset, detectedKey, webAudio]);
 
   if (detecting) {
     return (
@@ -88,7 +93,9 @@ export function KeySelectPage() {
       <div className="space-y-4">
         <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--border)]">
           <div className="w-2 h-2 rounded-full bg-[var(--amber)] shadow-[0_0_4px_var(--amber)]" />
-          <span className="text-xs font-mono text-[var(--text-secondary)]">
+          <span className="text-xs font-mono text-[var(--text-secondary)] flex-1 truncate">{filename}</span>
+          <span className="text-xs font-mono text-[var(--text-muted)] tabular-nums">{formatTime(webAudio.duration)}</span>
+          <span className="text-xs font-mono text-[var(--amber)]">
             {detectedKey && transposeKey(detectedKey, transposeOffset)}
             {transposeOffset !== 0 && ` (${transposeOffset > 0 ? '+' : ''}${transposeOffset})`}
           </span>
@@ -106,6 +113,13 @@ export function KeySelectPage() {
       animate={{ opacity: 1, y: 0 }}
       className="space-y-6"
     >
+      {/* Song info */}
+      <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-[var(--bg-panel)] border border-[var(--border)]">
+        <div className="w-2 h-2 rounded-full bg-[var(--teal)] shadow-[0_0_4px_var(--teal)]" />
+        <span className="text-xs font-mono text-[var(--text-secondary)] flex-1 truncate">{filename}</span>
+        <span className="text-xs font-mono text-[var(--text-muted)] tabular-nums">{formatTime(webAudio.duration)}</span>
+      </div>
+
       <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] p-8 text-center space-y-6">
         <div>
           <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-widest">Detected Key</span>
@@ -179,7 +193,7 @@ export function KeySelectPage() {
 
       <div className="flex items-center justify-between">
         <button
-          onClick={() => { webAudio.pause(); navigate('/practice'); }}
+          onClick={() => { webAudio.pause(); navigate('/'); }}
           className="text-xs font-mono text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors uppercase tracking-wider"
         >
           ← Back

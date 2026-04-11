@@ -1,9 +1,8 @@
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { LandingPage } from './pages/LandingPage';
-import { UploadPage } from './pages/UploadPage';
+import { HomePage } from './pages/HomePage';
+import { SongPage } from './pages/SongPage';
 import { PracticePage } from './pages/PracticePage';
-import { KeySelectPage } from './pages/KeySelectPage';
 
 function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
@@ -44,11 +43,9 @@ function App() {
   return (
     <Layout>
       <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/upload" element={<UploadPage />} />
-        <Route path="/practice" element={<PracticePage />} />
-        <Route path="/practice/:jobId/key" element={<KeySelectPage />} />
-        <Route path="/practice/:jobId" element={<PracticePage />} />
+        <Route path="/" element={<HomePage />} />
+        <Route path="/song/:id" element={<SongPage />} />
+        <Route path="/song/:id/practice" element={<PracticePage />} />
       </Routes>
     </Layout>
   );

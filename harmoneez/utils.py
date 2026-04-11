@@ -1,7 +1,6 @@
 """Constants, data structures, and shared utilities."""
 
 import re
-import shutil
 from dataclasses import dataclass
 
 import numpy as np
@@ -75,29 +74,6 @@ class HarmonyNote:
 
 
 # ── Shared utilities ──────────────────────────────────────────────────────────
-
-def parse_time(time_str: str) -> float:
-    """Parse '1:49' or '109' or '109.5' to seconds as float."""
-    if ':' in time_str:
-        parts = time_str.split(':')
-        if len(parts) != 2:
-            raise ValueError(f"Invalid time format: '{time_str}'. Use seconds (109) or mm:ss (1:49)")
-        return float(parts[0]) * 60 + float(parts[1])
-    return float(time_str)
-
-
-def check_system_deps():
-    """Check that required system tools are installed. Raises RuntimeError if missing."""
-    missing = []
-    if shutil.which("rubberband") is None:
-        missing.append("rubberband  (install with: brew install rubberband)")
-    if shutil.which("ffmpeg") is None:
-        missing.append("ffmpeg      (install with: brew install ffmpeg)")
-    if missing:
-        raise RuntimeError(
-            "Missing system dependencies:\n" + "\n".join(f"  - {dep}" for dep in missing)
-        )
-
 
 def build_scale_pitch_classes(key_name: str) -> list[int]:
     """

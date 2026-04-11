@@ -23,10 +23,11 @@ interface ResumedSession {
 
 interface Props {
   onBack: () => void;
+  onChangeKey?: () => void;
   resumedSession?: ResumedSession;
 }
 
-export function PracticeView({ onBack, resumedSession }: Props) {
+export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
   const [step, setStep] = useState<FlowStep>('loading');
 
   // Reference track
@@ -302,7 +303,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
             <span className="text-xs font-mono text-[var(--text-secondary)] flex-1">{refFilename}</span>
             <span className="text-xs font-mono text-[var(--amber)]">{detectedKey}</span>
             <button
-              onClick={() => { webAudio.pause(); if (refJobId) window.location.href = `/practice/${refJobId}/key`; }}
+              onClick={() => { webAudio.pause(); onChangeKey?.(); }}
               className="text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors uppercase tracking-wider"
             >
               Change
@@ -475,7 +476,7 @@ export function PracticeView({ onBack, resumedSession }: Props) {
         onClick={onBack}
         className="text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors uppercase tracking-wider"
       >
-        Back to home
+        ← Back
       </button>
     </div>
   );

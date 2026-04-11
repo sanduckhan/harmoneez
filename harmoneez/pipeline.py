@@ -34,6 +34,7 @@ def run_pipeline(
     output_dir: Path | None = None,
     tmp_dir: Path | None = None,
     on_progress: ProgressCallback | None = None,
+    skip_separation: bool = False,
 ) -> dict:
     """
     Run the full harmonize pipeline.
@@ -49,6 +50,7 @@ def run_pipeline(
         output_dir: Where to write output files. None = same dir as input.
         tmp_dir: Temp directory for intermediate files. None = auto-create.
         on_progress: Callback(step_name, message, step_num, total_steps).
+        skip_separation: If True, treat input as already-isolated vocals (skip Demucs).
 
     Returns:
         dict with keys: key, confidence, candidates, has_key_change,
@@ -81,8 +83,17 @@ def run_pipeline(
     total_steps = 4 + len(interval_list)  # separate + key + correct + melody + N intervals
 
     # Step 1: Isolate vocals + instrumental
-    progress("separating", "Isolating vocals...", 1, total_steps)
-    vocals_audio, instrumental_audio, sr = separate_vocals(input_path, tmp_dir)
+    if skip_separation:
+        progress("separating", "Loading vocal audio...", 1, total_steps)
+        vocals_audio, sr = sf.read(str(input_path))
+        if vocals_audio.ndim > 1:
+            vocals_audio = vocals_audio.mean(axis=1)
+        vocals_audio = vocals_audio.astype(np.float32)
+        instrumental_audio = np.zeros_like(vocals_audio)
+        sf.write(str(tmp_dir / "vocals.wav"), vocals_audio, sr)
+    else:
+        progress("separating", "Isolating vocals...", 1, total_steps)
+        vocals_audio, instrumental_audio, sr = separate_vocals(input_path, tmp_dir)
     progress("separating", f"Vocal track: {len(vocals_audio) / sr:.1f}s at {sr}Hz", 1, total_steps)
 
     # Step 2: Detect key (skip if already provided)

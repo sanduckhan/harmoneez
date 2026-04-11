@@ -1,7 +1,6 @@
 """Key detection using Essentia KeyExtractor."""
 
 import re
-import sys
 
 import essentia.standard as es
 import numpy as np
@@ -83,33 +82,3 @@ def parse_key_string(key_str: str) -> str:
             quality = "major"
 
     return f"{root} {quality}"
-
-
-def confirm_key(
-    detected_key: str,
-    confidence: float,
-    top_3: list[tuple[str, float]],
-    cli_key_override: str | None,
-) -> str:
-    """
-    Interactive key confirmation for CLI use only.
-    If --key was provided, return it. Otherwise prompt for confirmation.
-    """
-    if cli_key_override is not None:
-        return cli_key_override
-
-    print(f"  Detected key: {detected_key} (confidence: {confidence:.2f})")
-    print(f"  Top 3 candidates:")
-    for key_name, corr in top_3:
-        print(f"    - {key_name} ({corr:.2f})")
-
-    user_input = input("  Press Enter to accept, or type a key (e.g. Gm, 'Ab major'): ").strip()
-
-    if not user_input:
-        return detected_key
-
-    try:
-        return parse_key_string(user_input)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)

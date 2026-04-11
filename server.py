@@ -367,107 +367,17 @@ async def run_job(job: Job, runner):
 
 
 async def _run_prepare(job: Job):
-    """Run separation + key detection + optional transpose + melody extraction."""
+    """Run separation + optional transpose + melody extraction."""
     def runner(on_progress):
-        from harmoneez.separation import separate_vocals
-        from harmoneez.pitch_shift import pitch_shift_librosa
-        from harmoneez.note_segmentation import f0_contour_to_notes
-        import numpy as np
-        import pyworld as pw
-
-        transpose = job.params.get("transpose", 0)
-        key_name = job.params.get("key", "")
-        total_steps = 5 if transpose != 0 else 2
-
-        step = 0
-
-        # Step 1: Separate vocals (the long one)
-        step += 1
-        duration_s = job.duration
-        estimate = max(30, int(duration_s * 0.35))
-        on_progress("separating", f"Isolating vocals... (~{estimate}s)", step, total_steps)
-        vocals_audio, instrumental_audio, sr = separate_vocals(job.input_path, job.tmp_dir)
-
-        # Steps 2-4: Pitch shift if transpose != 0
-        if transpose != 0:
-            # Step 2: Analyze vocal pitch (WORLD harvest + cheaptrick + d4c)
-            step += 1
-            on_progress("transposing", "Analyzing vocal pitch...", step, total_steps)
-            audio_f64 = vocals_audio.astype(np.float64)
-            f0_v, ta_v = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1000.0)
-            sp_v = pw.cheaptrick(audio_f64, f0_v, ta_v, sr)
-            ap_v = pw.d4c(audio_f64, f0_v, ta_v, sr)
-
-            # Step 3: Transpose vocals (synthesis)
-            step += 1
-            on_progress("transposing", "Transposing vocals...", step, total_steps)
-            f0_shifted = f0_v * (2.0 ** (transpose / 12.0))
-            vocals_shifted = pw.synthesize(f0_shifted, sp_v, ap_v, sr)
-            if len(vocals_shifted) > len(vocals_audio):
-                vocals_shifted = vocals_shifted[:len(vocals_audio)]
-            elif len(vocals_shifted) < len(vocals_audio):
-                vocals_shifted = np.pad(vocals_shifted, (0, len(vocals_audio) - len(vocals_shifted)))
-            vocals_audio = vocals_shifted.astype(np.float32)
-
-            # Step 4: Transpose instrumental
-            step += 1
-            on_progress("transposing", "Transposing instrumental...", step, total_steps)
-            instrumental_audio = pitch_shift_librosa(instrumental_audio, sr, transpose)
-
-            sf.write(str(job.tmp_dir / "vocals.wav"), vocals_audio, sr)
-            sf.write(str(job.tmp_dir / "instrumental.wav"), instrumental_audio, sr)
-            # key_name is already the transposed key from the frontend — don't transpose again
-
-        # Always create full mix from stems
-        full_mix = vocals_audio + instrumental_audio
-        max_val = np.max(np.abs(full_mix))
-        if max_val > 1.0:
-            full_mix = full_mix / max_val
-        sf.write(str(job.tmp_dir / "full_mix.wav"), full_mix, sr)
-
-        # Final step: Extract melody
-        step += 1
-        on_progress("extracting_melody", "Extracting melody...", step, total_steps)
-
-        audio_f64 = vocals_audio.astype(np.float64)
-        f0, timeaxis = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1000.0)
-
-        world_notes = f0_contour_to_notes(f0, timeaxis, vocals_audio, sr)
-
-        with open(job.tmp_dir / "melody_data.json", 'w') as f:
-            json.dump(world_notes, f)
-
-        # Pitch contour: frame-level F0 in MIDI (null for unvoiced)
-        pitch_contour = []
-        for i in range(len(f0)):
-            if f0[i] < 1.0:
-                pitch_contour.append(None)
-            else:
-                midi = 12 * np.log2(f0[i] / 440.0) + 69
-                pitch_contour.append(round(float(midi), 2))
-
-        frame_duration = float(timeaxis[1] - timeaxis[0]) if len(timeaxis) > 1 else 0.005
-
-        with open(job.tmp_dir / "pitch_contour.json", 'w') as f:
-            json.dump({"frame_duration": frame_duration, "contour": pitch_contour}, f)
-
-        # Amplitude envelope (RMS at ~100fps)
-        hop = sr // 100
-        envelope = []
-        for i in range(0, len(vocals_audio), hop):
-            chunk = vocals_audio[i:i+hop]
-            rms = float(np.sqrt(np.mean(chunk**2)))
-            envelope.append(round(rms, 5))
-        with open(job.tmp_dir / "amplitude.json", 'w') as f:
-            json.dump({"sr": sr, "hop": hop, "envelope": envelope}, f)
-
-        on_progress("done", "Ready!", total_steps, total_steps)
-
-        return {
-            "key": key_name,
-            "melody_count": len(world_notes),
-            "duration": len(vocals_audio) / sr,
-        }
+        from harmoneez.prepare import run_prepare
+        return run_prepare(
+            input_path=job.input_path,
+            tmp_dir=job.tmp_dir,
+            transpose=job.params.get("transpose", 0),
+            key=job.params.get("key", ""),
+            duration=job.duration,
+            on_progress=on_progress,
+        )
 
     result = await run_job(job, runner)
     if result:
@@ -511,6 +421,7 @@ async def _run_pipeline(job: Job):
             harmony_volume=params.get("harmony_volume", 0.7),
             output_dir=job.tmp_dir,
             on_progress=on_progress,
+            skip_separation=params.get("skip_separation", False),
         )
 
         # Convert file paths to relative URLs

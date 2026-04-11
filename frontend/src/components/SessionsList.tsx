@@ -4,7 +4,7 @@ import { getSessions, deleteSession, type SessionInfo } from '../api';
 import { formatTime } from '../utils';
 
 interface Props {
-  onResume: (sessionId: string) => void;
+  onResume: (session: SessionInfo) => void;
 }
 
 export function SessionsList({ onResume }: Props) {
@@ -49,7 +49,7 @@ export function SessionsList({ onResume }: Props) {
             className="flex items-center gap-3 px-4 py-3 rounded-lg bg-[var(--bg-panel)] border border-[var(--border)] hover:border-[var(--border-highlight)] transition-all group"
           >
             <div className="w-2 h-2 rounded-full bg-[var(--amber)] opacity-50 group-hover:opacity-100 transition-opacity" />
-            <div className="flex-1 min-w-0 cursor-pointer" onClick={() => onResume(session.id)}>
+            <div className="flex-1 min-w-0 cursor-pointer" onClick={() => onResume(session)}>
               <p className="text-sm text-[var(--text-primary)] truncate font-mono">
                 {session.filename}
               </p>
@@ -58,7 +58,7 @@ export function SessionsList({ onResume }: Props) {
               </p>
             </div>
             <button
-              onClick={() => onResume(session.id)}
+              onClick={() => onResume(session)}
               className="text-[10px] font-mono text-[var(--text-muted)] group-hover:text-[var(--amber)] transition-colors uppercase tracking-wider"
             >
               Resume
