@@ -39,15 +39,42 @@ function Layout({ children }: { children: React.ReactNode }) {
   );
 }
 
+function WideLayout({ children }: { children: React.ReactNode }) {
+  const navigate = useNavigate();
+
+  return (
+    <div className="min-h-screen bg-[var(--bg-deep)]">
+      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-[200px] bg-[var(--amber)] opacity-[0.02] blur-[100px] pointer-events-none" />
+
+      <div className="relative px-6 py-6 space-y-4">
+        <motion.header
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-end justify-between mb-2"
+        >
+          <div className="cursor-pointer" onClick={() => navigate('/')}>
+            <h1 className="text-2xl tracking-tight" style={{ fontFamily: "'Instrument Serif', serif" }}>
+              <span className="text-[var(--text-primary)]">Harmon</span>
+              <span className="text-[var(--amber)]">eez</span>
+            </h1>
+          </div>
+        </motion.header>
+
+        <div className="h-px bg-gradient-to-r from-transparent via-[var(--border-highlight)] to-transparent" />
+
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   return (
-    <Layout>
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/song/:id" element={<SongPage />} />
-        <Route path="/song/:id/practice" element={<PracticePage />} />
-      </Routes>
-    </Layout>
+    <Routes>
+      <Route path="/" element={<Layout><HomePage /></Layout>} />
+      <Route path="/song/:id" element={<Layout><SongPage /></Layout>} />
+      <Route path="/song/:id/practice" element={<WideLayout><PracticePage /></WideLayout>} />
+    </Routes>
   );
 }
 

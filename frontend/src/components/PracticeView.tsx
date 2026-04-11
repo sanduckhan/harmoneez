@@ -39,6 +39,7 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
   const [pitchContourData, setPitchContourData] = useState<PitchContourData | null>(null);
   const [refDuration, setRefDuration] = useState(resumedSession?.duration ?? 0);
   const [audioSource, setAudioSource] = useState<'mix' | 'vocals' | 'instrumental'>('mix');
+  const [seekVersion, setSeekVersion] = useState(0);
 
   // Audio — always plays from processed files (full_mix, vocals, instrumental)
   const audioSrcUrl = refJobId ? (
@@ -139,8 +140,8 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
       recordAudioOffsetRef.current = webAudio.getTime();
       setRecordingPaused(false);
 
-      // Start reference playback from current playhead position
-      webAudio.play();
+      // Start reference playback if not already playing
+      if (!webAudio.playing) webAudio.play();
 
       setStep('recording');
     } catch {
@@ -266,6 +267,74 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
     setAccuracyScore(Math.round((inTuneCount / voiced.length) * 100));
   }, [step, melodyNotes]);
 
+  // Clear selection helper
+  const clearSelection = useCallback(() => {
+    setSelStart(null);
+    setSelEnd(null);
+  }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept typing in inputs
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      // Ignore during loading/generating/results
+      if (step === 'loading' || step === 'generating') return;
+
+      switch (e.key) {
+        case ' ': // Space — play/pause or pause/resume recording
+          e.preventDefault();
+          if (step === 'guide' || step === 'review') {
+            if (isPlaying) webAudio.pause();
+            else webAudio.play();
+          } else if (step === 'recording') {
+            if (recordingPaused) resumeRecording();
+            else pauseRecording();
+          }
+          break;
+
+        case 'r': // R — start recording (guide) or re-record (review/results)
+          if (step === 'guide') startRecording();
+          else if (step === 'review' || step === 'results') reRecord();
+          break;
+
+        case 'Escape': // Escape — stop recording or clear selection
+          if (step === 'recording') stopRecording();
+          else if (step === 'review' && (selStart !== null || selEnd !== null)) clearSelection();
+          break;
+
+        case 'ArrowLeft': // Cmd+Left = start, Shift+Left = -0.5s, Left = -2s
+          e.preventDefault();
+          if (step === 'guide' || step === 'review') {
+            if (e.metaKey) {
+              handleScrub(0);
+            } else {
+              const delta = e.shiftKey ? 0.5 : 2;
+              handleScrub(Math.max(0, webAudio.getTime() - delta));
+            }
+            setSeekVersion(v => v + 1);
+          }
+          break;
+
+        case 'ArrowRight': // Cmd+Right = end, Shift+Right = +0.5s, Right = +2s
+          e.preventDefault();
+          if (step === 'guide' || step === 'review') {
+            if (e.metaKey) {
+              handleScrub(webAudio.duration);
+            } else {
+              const delta = e.shiftKey ? 0.5 : 2;
+              handleScrub(Math.min(webAudio.duration, webAudio.getTime() + delta));
+            }
+            setSeekVersion(v => v + 1);
+          }
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [step, isPlaying, recordingPaused, selStart, selEnd, webAudio, startRecording, stopRecording, pauseRecording, resumeRecording, reRecord, clearSelection, handleScrub]);
+
   // Cleanup mic on unmount
   useEffect(() => {
     return () => {
@@ -343,8 +412,11 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
               scalePitchClasses={scalePCs}
               amplitude={amplitudeData}
               pitchContour={pitchContourData}
+              selection={selStart !== null && selEnd !== null ? { start: selStart, end: selEnd } : null}
               onScrub={handleScrub}
               onRegionSelect={handleRegionSelect}
+              onClearSelection={clearSelection}
+              seekVersion={seekVersion}
             />
           </div>
 
@@ -417,7 +489,7 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
                   {selStart !== null ? `Generate (${formatTime(selStart)}-${formatTime(selEnd!)})` : 'Generate All'}
                 </button>
                 <span className="text-[10px] font-mono text-[var(--text-muted)] ml-auto">
-                  {selStart !== null ? 'Section selected' : 'Shift+drag to select section'}
+                  {selStart !== null ? 'Section selected · Esc to clear' : 'Drag to select section'}
                 </span>
               </>
             )}

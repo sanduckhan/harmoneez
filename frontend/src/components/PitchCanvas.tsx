@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import type { MelodyNote, PitchSample } from '../types';
 import { findActiveNote, NOTE_NAMES } from '../utils';
 
@@ -26,8 +26,11 @@ interface Props {
   transposeOffset?: number;  // semitones to shift melody/contour display
   amplitude?: AmplitudeEnvelope | null;
   pitchContour?: PitchContour | null;
+  selection?: { start: number; end: number } | null;
   onScrub?: (time: number) => void;
   onRegionSelect?: (start: number, end: number) => void;
+  onClearSelection?: () => void;
+  seekVersion?: number;  // increment to force canvas redraw after programmatic seek
   className?: string;
 }
 
@@ -72,13 +75,14 @@ function deviationColor(notes: MelodyNote[], time: number, userMidi: number, off
 
 export function PitchCanvas({
   melodyNotes, pitchSamplesRef, getTime, duration,
-  mode, isPlaying, scalePitchClasses, transposeOffset = 0, amplitude, pitchContour, onScrub, onRegionSelect, className,
+  mode, isPlaying, scalePitchClasses, transposeOffset = 0, amplitude, pitchContour, selection, onScrub, onRegionSelect, onClearSelection, seekVersion, className,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
   const visSecsRef = useRef(DEFAULT_VISIBLE_SECONDS);
   const pitchRange = useRef(computePitchRange(melodyNotes));
   const isDragging = useRef(false);
+  const dragOriginX = useRef(0); // mouse X at drag start, for distance threshold
 
   // Store values in refs to avoid effect dependency cascades
   const getTimeRef = useRef(getTime);
@@ -87,13 +91,20 @@ export function PitchCanvas({
   transposeRef.current = transposeOffset;
   const scaleRef = useRef(scalePitchClasses);
   scaleRef.current = scalePitchClasses;
+  // Selection: controlled from parent, with local drag-in-progress overlay
   const selStartRef = useRef<number | null>(null);
   const selEndRef = useRef<number | null>(null);
-  const [, forceRender] = useState(0); // trigger re-render only when selection finalizes
+  // Sync controlled selection prop into refs for rendering
+  if (!isDragging.current) {
+    selStartRef.current = selection?.start ?? null;
+    selEndRef.current = selection?.end ?? null;
+  }
   const onScrubRef = useRef(onScrub);
   onScrubRef.current = onScrub;
   const onRegionSelectRef = useRef(onRegionSelect);
   onRegionSelectRef.current = onRegionSelect;
+  const onClearSelectionRef = useRef(onClearSelection);
+  onClearSelectionRef.current = onClearSelection;
 
   const amplitudeMaxRef = useRef(1);
   useEffect(() => {
@@ -401,10 +412,10 @@ export function PitchCanvas({
     }
   }, [isPlaying]);
 
-  // Redraw when paused (scrubbing or transpose change)
+  // Redraw when paused (scrubbing, transpose change, or programmatic seek)
   useEffect(() => {
     if (!isPlaying) loopRef.current();
-  }, [isPlaying]);
+  }, [isPlaying, seekVersion]);
 
   // Mouse handlers — read from refs to avoid dependency cascades
   const getTimeFromX = useCallback((clientX: number) => {
@@ -419,15 +430,19 @@ export function PitchCanvas({
   }, []);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (mode === 'recording') return; // no interaction during recording
+
     const t = getTimeFromX(e.clientX);
     const clampedT = Math.max(0, Math.min(duration, t));
 
-    if (mode === 'review' && e.shiftKey) {
+    if (mode === 'review') {
+      // In review: start potential drag (could become selection or seek on mouseUp)
       isDragging.current = true;
+      dragOriginX.current = e.clientX;
       selStartRef.current = clampedT;
       selEndRef.current = clampedT;
     } else {
-      // Click to seek in any mode — scrub then redraw
+      // Guide mode: click to seek
       onScrubRef.current?.(clampedT);
       requestAnimationFrame(() => loopRef.current());
     }
@@ -435,40 +450,54 @@ export function PitchCanvas({
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (!isDragging.current || mode !== 'review') return;
-    const t = getTimeFromX(e.clientX);
-    if (selStartRef.current !== null) {
-      selEndRef.current = t;
-      // Trigger redraw
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          const dpr = window.devicePixelRatio || 1;
-          const rect = canvas.getBoundingClientRect();
-          ctx.save();
-          ctx.scale(dpr, dpr);
-          render(ctx, rect.width, rect.height);
-          ctx.restore();
-        }
-      }
-    } else {
-      onScrubRef.current?.(Math.max(0, Math.min(duration, t)));
-    }
-  }, [mode, getTimeFromX, duration, render]);
+    // Only start visual selection after dragging > 5px (otherwise it's a click)
+    if (Math.abs(e.clientX - dragOriginX.current) < 5) return;
 
-  const handleMouseUp = useCallback(() => {
+    const t = getTimeFromX(e.clientX);
+    selEndRef.current = t;
+    // Redraw to show selection overlay
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        ctx.save();
+        ctx.scale(dpr, dpr);
+        render(ctx, rect.width, rect.height);
+        ctx.restore();
+      }
+    }
+  }, [mode, getTimeFromX, render]);
+
+  const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    if (!isDragging.current) return;
     isDragging.current = false;
+
+    const draggedFar = Math.abs(e.clientX - dragOriginX.current) >= 5;
     const ss = selStartRef.current;
     const se = selEndRef.current;
-    if (ss !== null && se !== null) {
+
+    if (draggedFar && ss !== null && se !== null) {
+      // Drag → create selection (if > 0.5s)
       const s = Math.min(ss, se);
-      const e = Math.max(ss, se);
-      if (e - s > 0.5) {
-        onRegionSelectRef.current?.(s, e);
-        forceRender(n => n + 1);
+      const end = Math.max(ss, se);
+      if (end - s > 0.5) {
+        onRegionSelectRef.current?.(s, end);
+      } else {
+        // Too short drag — clear and seek instead
+        onClearSelectionRef.current?.();
+        onScrubRef.current?.(Math.max(0, Math.min(duration, ss)));
       }
+    } else {
+      // Short click → seek
+      const t = getTimeFromX(e.clientX);
+      const clampedT = Math.max(0, Math.min(duration, t));
+      onClearSelectionRef.current?.();
+      onScrubRef.current?.(clampedT);
+      requestAnimationFrame(() => loopRef.current());
     }
-  }, []);
+  }, [getTimeFromX, duration]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     if (mode !== 'review') return;
@@ -481,11 +510,11 @@ export function PitchCanvas({
     <canvas
       ref={canvasRef}
       className={`w-full rounded-lg ${className || ''}`}
-      style={{ height: '420px', cursor: mode === 'recording' ? 'default' : 'crosshair' }}
+      style={{ height: '420px', cursor: mode === 'recording' ? 'default' : mode === 'review' ? 'crosshair' : 'pointer' }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
+      onMouseLeave={() => { if (isDragging.current) { isDragging.current = false; } }}
       onWheel={handleWheel}
     />
   );
