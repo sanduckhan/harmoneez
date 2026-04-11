@@ -372,7 +372,6 @@ async def _run_prepare(job: Job):
         from harmoneez.separation import separate_vocals
         from harmoneez.pitch_shift import pitch_shift_librosa
         from harmoneez.note_segmentation import f0_contour_to_notes
-        from harmoneez.utils import transpose_key_name
         import numpy as np
         import pyworld as pw
 
@@ -417,7 +416,7 @@ async def _run_prepare(job: Job):
 
             sf.write(str(job.tmp_dir / "vocals.wav"), vocals_audio, sr)
             sf.write(str(job.tmp_dir / "instrumental.wav"), instrumental_audio, sr)
-            key_name = transpose_key_name(key_name, transpose) if key_name else key_name
+            # key_name is already the transposed key from the frontend — don't transpose again
 
         # Always create full mix from stems
         full_mix = vocals_audio + instrumental_audio
