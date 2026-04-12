@@ -23,68 +23,74 @@ def build_scale_hz(key_name: str) -> list[float]:
     return sorted(hz_targets)
 
 
-def find_nearest_scale_hz(hz: float, scale_hz: list[float]) -> float:
-    """Find the nearest Hz value in the scale target list."""
-    best = scale_hz[0]
-    best_dist = abs(1200 * np.log2(hz / best))
-    for target in scale_hz[1:]:
-        dist = abs(1200 * np.log2(hz / target))
-        if dist < best_dist:
-            best = target
-            best_dist = dist
-    return best
-
-
 def pitch_correct_vocals(
     vocals_audio: np.ndarray,
     sr: int,
     note_events: list[tuple[float, float, int, float]],
     key_name: str,
     strength: float = PITCH_CORRECT_STRENGTH,
-) -> tuple[np.ndarray, int, int, list[dict]]:
+) -> tuple[np.ndarray, int, int, list[dict], tuple]:
     """
     Frame-by-frame pitch correction using WORLD vocoder.
-    Returns (corrected_audio, corrected_count, total_voiced, pitch_frames).
-    pitch_frames is a list of dicts with time, actual_hz, target_hz, deviation_cents.
+
+    Returns (corrected_audio, corrected_count, total_voiced, pitch_frames, world_analysis).
+    - pitch_frames is a list of dicts with time, actual_hz, target_hz, deviation_cents.
+    - world_analysis is a (corrected_f0, timeaxis, sp, ap) tuple that can be passed
+      directly to render_harmony() to skip a redundant analysis pass.
     """
     import pyworld as pw
 
-    scale_hz = build_scale_hz(key_name)
+    scale_hz = np.asarray(build_scale_hz(key_name), dtype=np.float64)
     audio_f64 = vocals_audio.astype(np.float64)
 
     f0, timeaxis = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1000.0)
     sp = pw.cheaptrick(audio_f64, f0, timeaxis, sr)
     ap = pw.d4c(audio_f64, f0, timeaxis, sr)
 
-    corrected_f0 = f0.copy()
-    corrected_count = 0
-    pitch_frames = []
+    voiced = f0 > 1.0
+    # Safe log base for unvoiced frames (value is masked out later)
+    safe_f0 = np.where(voiced, f0, 1.0)
+    log_actual = np.log2(safe_f0)
+    log_targets = np.log2(scale_hz)
 
-    for i in range(len(f0)):
-        frame = {"time": float(timeaxis[i])}
+    # Distance matrix of cents: |1200 * (log_actual[:, None] - log_targets[None, :])|
+    # We work in log2 space and only multiply by 1200 at the end; argmin is
+    # invariant to the constant factor.
+    dist = np.abs(log_actual[:, None] - log_targets[None, :])
+    nearest_idx = np.argmin(dist, axis=1)
+    target_hz_arr = scale_hz[nearest_idx]
 
-        if f0[i] < 1.0:
-            frame["actual_hz"] = None
-            frame["target_hz"] = None
-            frame["deviation_cents"] = None
-            pitch_frames.append(frame)
-            continue
+    deviation_cents = 1200.0 * (log_actual - np.log2(target_hz_arr))
 
-        actual_hz = f0[i]
-        target_hz = find_nearest_scale_hz(actual_hz, scale_hz)
-        deviation_cents = 1200.0 * np.log2(actual_hz / target_hz)
+    threshold_cents = PITCH_CORRECT_THRESHOLD * 100
+    correction_mask = voiced & (np.abs(deviation_cents) >= threshold_cents)
+    correction_ratio = np.where(
+        correction_mask,
+        2.0 ** ((-deviation_cents * strength) / 1200.0),
+        1.0,
+    )
+    corrected_f0 = f0 * correction_ratio
+    corrected_count = int(np.sum(correction_mask))
 
-        frame["actual_hz"] = round(float(actual_hz), 1)
-        frame["target_hz"] = round(float(target_hz), 1)
-        frame["deviation_cents"] = round(float(deviation_cents), 1)
-        pitch_frames.append(frame)
-
-        if abs(deviation_cents) < PITCH_CORRECT_THRESHOLD * 100:
-            continue
-
-        correction_ratio = 2.0 ** ((-deviation_cents * strength) / 1200.0)
-        corrected_f0[i] = actual_hz * correction_ratio
-        corrected_count += 1
+    # Build pitch_frames — preserve the exact dict shape the frontend expects
+    # (see frontend/src/api.ts: { time, actual_hz, target_hz, deviation_cents }).
+    actual_rounded = np.round(f0, 1)
+    target_rounded = np.round(target_hz_arr, 1)
+    dev_rounded = np.round(deviation_cents, 1)
+    times = timeaxis.tolist()
+    voiced_list = voiced.tolist()
+    actual_list = actual_rounded.tolist()
+    target_list = target_rounded.tolist()
+    dev_list = dev_rounded.tolist()
+    pitch_frames = [
+        {
+            "time": float(times[i]),
+            "actual_hz": float(actual_list[i]) if voiced_list[i] else None,
+            "target_hz": float(target_list[i]) if voiced_list[i] else None,
+            "deviation_cents": float(dev_list[i]) if voiced_list[i] else None,
+        }
+        for i in range(len(f0))
+    ]
 
     output = pw.synthesize(corrected_f0, sp, ap, sr)
 
@@ -93,5 +99,12 @@ def pitch_correct_vocals(
     elif len(output) < len(vocals_audio):
         output = np.pad(output, (0, len(vocals_audio) - len(output)))
 
-    total_voiced = int(np.sum(f0 > 1.0))
-    return output.astype(np.float32), corrected_count, total_voiced, pitch_frames
+    total_voiced = int(np.sum(voiced))
+    world_analysis = (corrected_f0, timeaxis, sp, ap)
+    return (
+        output.astype(np.float32),
+        corrected_count,
+        total_voiced,
+        pitch_frames,
+        world_analysis,
+    )

@@ -360,7 +360,7 @@ async def run_job(job: Job, runner):
             job.status = "completed"
             return result
         except Exception as e:
-            job.error = str(e)
+            job.error = str(e) or repr(e)
             job.status = "failed"
         finally:
             await broadcast_progress(job)

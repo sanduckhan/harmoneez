@@ -3,8 +3,14 @@
 import numpy as np
 
 from .utils import (
-    HarmonyNote, SEGMENT_PAD_MS, MIN_SEGMENT_SAMPLES, CROSSFADE_MS,
+    HarmonyNote, SEGMENT_PAD_MS, MIN_SEGMENT_SAMPLES, CROSSFADE_MS, DETUNE_CENTS,
 )
+
+
+# Subtle pitch detune applied during synthesis — used to be done in a second
+# WORLD pass in mixer.humanize_harmony, but it's equivalent (and ~Nx cheaper
+# across N intervals) to fold it into the existing shift ratio here.
+_DETUNE_RATIO = 2.0 ** (DETUNE_CENTS / 1200.0)
 
 
 def analyze_world(vocals_audio: np.ndarray, sr: int) -> tuple:
@@ -43,7 +49,7 @@ def render_harmony(
     voiced_mask = f0 > 1.0
 
     for hn in harmony_notes:
-        shift_ratio = 2.0 ** (hn.semitone_shift / 12.0)
+        shift_ratio = 2.0 ** (hn.semitone_shift / 12.0) * _DETUNE_RATIO
         in_range = (timeaxis >= hn.start_time - pad_sec) & (timeaxis <= hn.end_time + pad_sec)
         mask = in_range & voiced_mask & (f0_shifted < 1.0)
         f0_shifted[mask] = f0[mask] * shift_ratio

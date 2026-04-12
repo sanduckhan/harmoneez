@@ -70,7 +70,7 @@ def run_prepare(
 
     # Separate vocals from original audio (Demucs works best on unmodified input)
     step += 1
-    estimate = max(30, int(duration * 0.35))
+    estimate = max(5, int(duration * 0.07))
     on_progress("separating", f"Isolating vocals... (~{estimate}s)", step, total_steps)
     vocals_audio, instrumental_audio, sr = separate_vocals(input_path, tmp_dir)
 

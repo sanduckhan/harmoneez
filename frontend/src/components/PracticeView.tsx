@@ -258,6 +258,7 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
     if (vocalProgress?.status === 'failed') {
       setProcessingVocal(false);
       setStep('review');
+      alert('Processing failed: ' + (vocalProgress.error || 'Unknown error'));
     }
   }, [vocalProgress]);
 

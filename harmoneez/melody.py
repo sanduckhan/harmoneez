@@ -2,6 +2,7 @@
 
 import statistics
 from pathlib import Path
+from typing import Optional
 
 from .utils import VELOCITY_THRESHOLD
 
@@ -10,6 +11,20 @@ MIN_MELODY_DURATION = 0.08
 
 # Notes more than this many semitones from the median pitch are likely artifacts
 PITCH_OUTLIER_SEMITONES = 14
+
+# Cached Basic Pitch model — the CoreML .mlpackage is loaded on first use and
+# reused across calls so we don't re-init it on every extract_melody() call.
+_MODEL: Optional["object"] = None
+
+
+def _get_model():
+    """Return the module-scope Basic Pitch model, loading it on first call."""
+    global _MODEL
+    if _MODEL is None:
+        from basic_pitch import ICASSP_2022_MODEL_PATH
+        from basic_pitch.inference import Model
+        _MODEL = Model(ICASSP_2022_MODEL_PATH)
+    return _MODEL
 
 
 def extract_melody(vocals_path: Path) -> list[tuple[float, float, int, float]]:
@@ -20,7 +35,14 @@ def extract_melody(vocals_path: Path) -> list[tuple[float, float, int, float]]:
     """
     from basic_pitch.inference import predict
 
-    model_output, midi_data, note_events = predict(str(vocals_path))
+    try:
+        model_output, midi_data, note_events = predict(
+            str(vocals_path), model_or_model_path=_get_model()
+        )
+    except (ValueError, IndexError):
+        # Basic Pitch can crash on very short or silent audio (e.g.
+        # np.max on a zero-size onset array). Treat as "no notes."
+        raise ValueError("No melody notes detected in the vocal track.")
 
     notes = []
     for event in note_events:

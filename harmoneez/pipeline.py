@@ -82,6 +82,20 @@ def run_pipeline(
 
     total_steps = 4 + len(interval_list)  # separate + key + correct + melody + N intervals
 
+    # Decide whether we can crop before Demucs. When the user picks a section
+    # we only need Demucs to separate that section (plus a 2s context pad on
+    # each side for spectral continuity). This is a massive win on short
+    # sections of long songs — Demucs runtime is roughly linear in input
+    # length. skip_separation handles its own crop downstream.
+    #
+    # Guard: the padded section must be at least 10s (Demucs's internal
+    # chunking asserts offset < total_length, which fails on very short
+    # inputs). Also skip if the section is >80 % of the file — not enough
+    # savings to justify the extra read/write.
+    DEMUCS_MIN_SEC = 10.0
+    want_section = (start is not None or end is not None)
+    pre_cropped = False
+
     # Step 1: Isolate vocals + instrumental
     if skip_separation:
         progress("separating", "Loading vocal audio...", 1, total_steps)
@@ -91,12 +105,53 @@ def run_pipeline(
         vocals_audio = vocals_audio.astype(np.float32)
         instrumental_audio = np.zeros_like(vocals_audio)
         sf.write(str(tmp_dir / "vocals.wav"), vocals_audio, sr)
+    elif want_section:
+        info = sf.info(str(input_path))
+        file_duration = info.duration
+        raw_sr = info.samplerate
+        section_start = float(start) if start is not None else 0.0
+        section_end = float(end) if end is not None else file_duration
+        section_end = min(section_end, file_duration)
+        pad_sec = 2.0
+        padded_start = max(0.0, section_start - pad_sec)
+        padded_end = min(file_duration, section_end + pad_sec)
+        padded_duration = padded_end - padded_start
+
+        if padded_duration >= DEMUCS_MIN_SEC and padded_duration <= file_duration * 0.8:
+            # Section is long enough for Demucs and meaningfully shorter than
+            # the full file — crop first, then separate.
+            progress("separating", "Isolating vocals (section)...", 1, total_steps)
+            start_frame = int(padded_start * raw_sr)
+            stop_frame = int(padded_end * raw_sr)
+            section_audio, _ = sf.read(str(input_path), start=start_frame, stop=stop_frame)
+            section_file = tmp_dir / "_section_for_demucs.wav"
+            sf.write(str(section_file), section_audio, raw_sr)
+
+            vocals_audio, instrumental_audio, sr = separate_vocals(section_file, tmp_dir)
+
+            # Trim the 2s context pad off both ends so downstream sample
+            # indices line up with section_start / section_end.
+            lead_in = int((section_start - padded_start) * sr)
+            section_len = int((section_end - section_start) * sr)
+            vocals_audio = vocals_audio[lead_in : lead_in + section_len]
+            instrumental_audio = instrumental_audio[lead_in : lead_in + section_len]
+
+            # Overwrite the files separate_vocals wrote with trimmed versions
+            sf.write(str(tmp_dir / "vocals.wav"), vocals_audio, sr)
+            sf.write(str(tmp_dir / "instrumental.wav"), instrumental_audio, sr)
+            pre_cropped = True
+        else:
+            # Section too short for pre-cropping or nearly full file —
+            # fall back to separating the whole thing, crop later.
+            progress("separating", "Isolating vocals...", 1, total_steps)
+            vocals_audio, instrumental_audio, sr = separate_vocals(input_path, tmp_dir)
     else:
         progress("separating", "Isolating vocals...", 1, total_steps)
         vocals_audio, instrumental_audio, sr = separate_vocals(input_path, tmp_dir)
     progress("separating", f"Vocal track: {len(vocals_audio) / sr:.1f}s at {sr}Hz", 1, total_steps)
 
-    # Step 2: Detect key (skip if already provided)
+    # Step 2: Detect key (skip if already provided). Key detection uses the
+    # full original mix (not the cropped section) for best harmonic context.
     if key:
         confirmed_key = key
         confidence = 1.0
@@ -105,7 +160,6 @@ def run_pipeline(
         progress("detecting_key", f"Using provided key: {confirmed_key}", 2, total_steps)
     else:
         progress("detecting_key", "Detecting song key...", 2, total_steps)
-        # Detect key on the original full mix (better harmonic context than isolated vocals)
         import librosa
         raw_audio, raw_sr = librosa.load(str(input_path), sr=None, mono=True)
         confirmed_key, confidence, candidates = detect_key(raw_audio.astype(np.float32), raw_sr)
@@ -115,9 +169,10 @@ def run_pipeline(
         else:
             progress("detecting_key", f"Key: {confirmed_key} (confidence: {confidence:.2f})", 2, total_steps)
 
-    # Crop to section
+    # Crop to section — now a no-op for the Demucs path (already cropped
+    # pre-separation), still runs for skip_separation.
     vocals_path = tmp_dir / "vocals.wav"
-    if start is not None or end is not None:
+    if want_section and not pre_cropped:
         start_sample = int(start * sr) if start else 0
         end_sample = int(end * sr) if end else len(vocals_audio)
         end_sample = min(end_sample, len(vocals_audio))
@@ -133,10 +188,11 @@ def run_pipeline(
     # Step 3: Pitch correction
     corrected_path = None
     pitch_data_path = None
+    world_data = None
     if pitch_correct:
         progress("pitch_correcting", "Correcting vocal pitch...", 3, total_steps)
         raw_melody = extract_melody(vocals_path)
-        vocals_audio, corrected_count, total_voiced, pitch_frames = pitch_correct_vocals(
+        vocals_audio, corrected_count, total_voiced, pitch_frames, world_data = pitch_correct_vocals(
             vocals_audio, sr, raw_melody, confirmed_key
         )
         corrected_path = (output_dir or input_path.parent) / f"{input_path.stem}_corrected.wav"
@@ -164,9 +220,12 @@ def run_pipeline(
     with open(tmp_dir / "melody_data.json", 'w') as f:
         json.dump(melody_json, f)
 
-    # WORLD analysis: run once, reuse for all intervals
+    # WORLD analysis for rendering — reuse the analysis from pitch correction
+    # when available (sp/ap don't meaningfully change after a small f0 shift),
+    # otherwise run a fresh analysis.
     progress("analyzing", "Analyzing vocal audio...", 5, total_steps)
-    world_data = analyze_world(vocals_audio, sr)
+    if world_data is None:
+        world_data = analyze_world(vocals_audio, sr)
 
     # Steps 5+: Generate + render + mix for each interval
     output_files = []

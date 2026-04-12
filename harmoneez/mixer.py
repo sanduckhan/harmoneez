@@ -6,35 +6,23 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from .utils import TIMING_OFFSET_MS, DETUNE_CENTS, HARMONY_PAN
+from .utils import TIMING_OFFSET_MS, HARMONY_PAN
 
 
-def humanize_harmony(harmony_audio: np.ndarray, sr: int) -> np.ndarray:
+def apply_timing_offset(harmony_audio: np.ndarray, sr: int) -> np.ndarray:
     """
-    Apply subtle humanization: timing offset + micro-detuning.
-    """
-    import pyworld as pw
+    Shift the harmony track forward by TIMING_OFFSET_MS milliseconds.
 
+    This is half of the previous humanize_harmony: the micro-detuning that
+    used to live here has been folded into render_harmony's shift ratio so
+    we don't have to run a second WORLD analysis pass per interval.
+    """
     offset_samples = int(TIMING_OFFSET_MS / 1000.0 * sr)
+    if offset_samples <= 0 or offset_samples >= len(harmony_audio):
+        return harmony_audio
     delayed = np.zeros_like(harmony_audio)
     delayed[offset_samples:] = harmony_audio[:-offset_samples]
-
-    audio_f64 = delayed.astype(np.float64)
-    f0, t = pw.harvest(audio_f64, sr, f0_floor=65.0, f0_ceil=1500.0)
-    sp = pw.cheaptrick(audio_f64, f0, t, sr)
-    ap = pw.d4c(audio_f64, f0, t, sr)
-
-    detune_ratio = 2.0 ** (DETUNE_CENTS / 1200.0)
-    f0_detuned = f0 * detune_ratio
-
-    detuned = pw.synthesize(f0_detuned, sp, ap, sr)
-
-    if len(detuned) > len(harmony_audio):
-        detuned = detuned[:len(harmony_audio)]
-    elif len(detuned) < len(harmony_audio):
-        detuned = np.pad(detuned, (0, len(harmony_audio) - len(detuned)))
-
-    return detuned.astype(np.float32)
+    return delayed
 
 
 def mix_and_save(
@@ -57,7 +45,7 @@ def mix_and_save(
     harmony_path = output_dir / f"{stem}{suffix}_harmony.wav"
     mixed_path = output_dir / f"{stem}{suffix}_mixed.wav"
 
-    harmony_humanized = humanize_harmony(harmony_audio, sr)
+    harmony_humanized = apply_timing_offset(harmony_audio, sr)
     harmony_scaled = harmony_humanized * harmony_volume
 
     # Harmony-only output (mono)

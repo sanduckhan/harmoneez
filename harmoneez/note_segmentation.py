@@ -46,15 +46,23 @@ def f0_contour_to_notes(
     min_frames = max(1, int(min_note_ms / 1000.0 / frame_dur))
     min_gap_frames = max(1, int(min_gap_ms / 1000.0 / frame_dur))
 
-    # Compute per-frame RMS energy
+    # Compute per-frame RMS energy (vectorized)
     hop_samples = int(frame_dur * sr)
-    frame_energy = np.zeros(len(f0))
-    for i in range(len(f0)):
-        start = i * hop_samples
-        end = min(start + hop_samples, len(audio))
-        if start < len(audio):
-            chunk = audio[start:end]
-            frame_energy[i] = np.sqrt(np.mean(chunk ** 2))
+    n_frames = len(f0)
+    frame_energy = np.zeros(n_frames)
+    if hop_samples > 0 and len(audio) > 0:
+        # Full frames: those entirely within the audio (start+hop <= len)
+        n_full = min(n_frames, len(audio) // hop_samples)
+        if n_full > 0:
+            full = audio[: n_full * hop_samples].astype(np.float64, copy=False)
+            frame_energy[:n_full] = np.sqrt(
+                (full.reshape(n_full, hop_samples) ** 2).mean(axis=1)
+            )
+        # Partial last frame (matches the old per-frame loop exactly)
+        partial_start = n_full * hop_samples
+        if n_full < n_frames and partial_start < len(audio):
+            tail = audio[partial_start:].astype(np.float64, copy=False)
+            frame_energy[n_full] = float(np.sqrt(np.mean(tail ** 2)))
 
     # Step 1: Find voiced segments (runs of consecutive voiced frames)
     segments = []
