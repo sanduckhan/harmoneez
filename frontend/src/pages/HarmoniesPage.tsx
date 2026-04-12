@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { resumeSession, getRecordings, deleteRecording } from '../api';
 import type { RecordingInfo } from '../types';
-import { ResultsGrid } from '../components/ResultsGrid';
+import { StemMixer } from '../components/StemMixer';
 import { formatTime } from '../utils';
 
 export function HarmoniesPage() {
@@ -106,11 +106,11 @@ export function HarmoniesPage() {
             {recordings.length} recording{recordings.length !== 1 ? 's' : ''}
           </p>
 
-          {recordings.map((rec, idx) => (
+          {[...recordings].reverse().map((rec, i) => (
             <RecordingPanel
               key={rec.id}
               recording={rec}
-              index={recordings.length - idx}
+              index={recordings.length - i}
               isExpanded={expandedId === rec.id}
               onToggle={() => toggleExpand(rec.id)}
               onDelete={() => handleDelete(rec.id)}
@@ -140,14 +140,18 @@ function RecordingPanel({ recording, index, isExpanded, onToggle, onDelete }: Re
     ? `${formatTime(recording.section_start)}–${formatTime(recording.section_end)}`
     : 'Full song';
 
-  const files = useMemo(() =>
-    recording.harmonies.map(h => ({
-      interval: h.interval,
-      harmony_url: h.harmony_url,
-      mixed_url: h.mixed_url,
-    })),
-    [recording.harmonies],
-  );
+  const stems = useMemo(() => {
+    const result = [];
+    if (recording.corrected_url) {
+      result.push({ id: 'vocal', label: 'Your Vocal', url: recording.corrected_url });
+    } else if (recording.vocal_url) {
+      result.push({ id: 'vocal', label: 'Your Vocal', url: recording.vocal_url });
+    }
+    for (const h of recording.harmonies) {
+      result.push({ id: h.interval, label: h.interval, url: h.harmony_url });
+    }
+    return result;
+  }, [recording]);
 
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] overflow-hidden">
@@ -194,8 +198,8 @@ function RecordingPanel({ recording, index, isExpanded, onToggle, onDelete }: Re
             <div className="px-4 pb-4 space-y-4">
               <div className="h-px bg-[var(--border)]" />
 
-              {files.length > 0 ? (
-                <ResultsGrid files={files} />
+              {stems.length > 0 ? (
+                <StemMixer stems={stems} />
               ) : (
                 <p className="text-xs font-mono text-[var(--text-muted)] py-4">No harmony files found</p>
               )}

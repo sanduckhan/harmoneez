@@ -1,5 +1,6 @@
 """Main pipeline orchestrator with progress callbacks."""
 
+import json
 import logging
 import tempfile
 from pathlib import Path
@@ -200,6 +201,7 @@ def run_pipeline(
     corrected_path = None
     pitch_data_path = None
     world_data = None
+    raw_melody = None
     if pitch_correct:
         progress("pitch_correcting", "Correcting vocal pitch...", 3, total_steps)
         raw_melody = extract_melody(vocals_path)
@@ -211,22 +213,25 @@ def run_pipeline(
         sf.write(str(vocals_path), vocals_audio, sr)
 
         # Save pitch data as JSON
-        import json
         pitch_data_path = tmp_dir / "pitch_data.json"
         with open(pitch_data_path, 'w') as f:
             json.dump(pitch_frames, f)
 
         progress("pitch_correcting", f"Corrected {corrected_count}/{total_voiced} frames", 3, total_steps)
 
-    # Step 4: Extract melody
+    # Step 4: Extract melody — reuse from pitch correction when available
+    # (pitch correction only shifts F0 slightly, note boundaries are unchanged)
     progress("extracting_melody", "Extracting melody notes...", 4, total_steps)
-    logger.info(
-        "Melody input: path=%s duration=%.1fs rms=%.6f peak=%.6f",
-        vocals_path, len(vocals_audio) / sr,
-        float(np.sqrt(np.mean(vocals_audio ** 2))),
-        float(np.max(np.abs(vocals_audio))),
-    )
-    melody_notes = extract_melody(vocals_path)
+    if pitch_correct and raw_melody:
+        melody_notes = raw_melody
+    else:
+        logger.info(
+            "Melody input: duration=%.1fs rms=%.6f peak=%.6f",
+            len(vocals_audio) / sr,
+            float(np.sqrt(np.mean(vocals_audio ** 2))),
+            float(np.max(np.abs(vocals_audio))),
+        )
+        melody_notes = extract_melody(vocals_path)
     progress("extracting_melody", f"Found {len(melody_notes)} notes", 4, total_steps)
 
     # Save melody data as JSON for the pitch guide

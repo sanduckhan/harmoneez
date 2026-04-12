@@ -548,13 +548,16 @@ export function PitchCanvas({
     if (!canvas) return;
 
     const handleWheel = (e: WheelEvent) => {
-      // Shift + scroll = zoom
-      if (e.shiftKey && e.deltaY !== 0) {
-        e.preventDefault();
-        const factor = e.deltaY > 0 ? 1.15 : 0.87;
-        visSecsRef.current = Math.max(4, Math.min(durationRef.current, visSecsRef.current * factor));
-        loopRef.current();
-        return;
+      // Shift + scroll = zoom (browsers swap deltaY→deltaX when shift is held)
+      if (e.shiftKey) {
+        const delta = e.deltaY || e.deltaX;
+        if (delta !== 0) {
+          e.preventDefault();
+          const factor = delta > 0 ? 1.15 : 0.87;
+          visSecsRef.current = Math.max(4, Math.min(durationRef.current, visSecsRef.current * factor));
+          loopRef.current();
+          return;
+        }
       }
       // Horizontal scroll (trackpad swipe) — always prevent browser back/forward
       if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {

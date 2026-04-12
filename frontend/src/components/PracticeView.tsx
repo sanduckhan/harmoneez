@@ -130,7 +130,13 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
   // --- Recording ---
   const startRecording = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
       micStreamRef.current = stream;
       setMicStream(stream);
 
