@@ -6,6 +6,7 @@ Run with: python server.py
 
 import asyncio
 import json
+import logging
 import shutil
 import tempfile
 import time
@@ -15,6 +16,9 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -71,9 +75,17 @@ def save_session(job: Job, key: str = "", melody_count: int = 0):
 
     # Copy relevant files from tmp to session dir
     for f in job.tmp_dir.iterdir():
-        dest = session_dir / f.name
-        if not dest.exists():
-            shutil.copy2(str(f), str(dest))
+        if f.is_file():
+            dest = session_dir / f.name
+            if not dest.exists():
+                shutil.copy2(str(f), str(dest))
+
+    # Preserve existing recordings from a previous save
+    existing_recordings = []
+    meta_path = session_dir / "session.json"
+    if meta_path.is_file():
+        with open(meta_path) as f:
+            existing_recordings = json.load(f).get("recordings", [])
 
     # Save metadata
     meta = {
@@ -84,6 +96,7 @@ def save_session(job: Job, key: str = "", melody_count: int = 0):
         "melody_count": melody_count,
         "created_at": job.created_at,
         "result": job.result,
+        "recordings": existing_recordings,
     }
 
     with open(session_dir / "session.json", "w") as f:
@@ -189,10 +202,17 @@ class ProcessRequest(BaseModel):
     pitch_correct: bool = True
     intervals: str = "all"
     harmony_volume: float = 0.7
+    skip_separation: bool = False
 
 
 class DownloadRequest(BaseModel):
     intervals: list[str]
+
+
+class SaveRecordingRequest(BaseModel):
+    vocal_job_id: str
+    section_start: Optional[float] = None
+    section_end: Optional[float] = None
 
 
 def get_job(job_id: str) -> Job:
@@ -411,6 +431,8 @@ async def _run_pipeline(job: Job):
     """Run the harmony generation pipeline."""
     def runner(on_progress):
         params = job.params
+        logger.info("Pipeline input: %s params=%s", job.input_path.name, params)
+
         result = run_pipeline(
             input_path=job.input_path,
             key=params.get("key"),
@@ -550,6 +572,180 @@ async def download_zip(job_id: str, req: DownloadRequest):
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=harmoneez_{job_id}.zip"},
     )
+
+
+# ── Recording persistence ────────────────────────────────────────────────────
+
+def _persist_recording(
+    session_dir: Path, rec_id: str, vocal_job: Job,
+    section_start: float | None, section_end: float | None,
+) -> dict:
+    """Copy recording files to session dir and return metadata entry. (sync, blocking)"""
+    rec_dir = session_dir / "recordings" / rec_id
+    rec_dir.mkdir(parents=True, exist_ok=True)
+
+    harmonies = []
+    vocal_file = None
+    corrected_file = None
+
+    for f_info in vocal_job.result.get("files", []):
+        for key_name in ("harmony_path", "mixed_path"):
+            src = Path(f_info[key_name])
+            if src.is_file():
+                dest_name = src.name
+                if dest_name.startswith("recording_"):
+                    dest_name = dest_name[len("recording_"):]
+                shutil.copy2(str(src), str(rec_dir / dest_name))
+                if key_name == "harmony_path":
+                    harmonies.append({"interval": f_info["interval"], "harmony_file": dest_name})
+                elif harmonies:
+                    harmonies[-1]["mixed_file"] = dest_name
+
+    if vocal_job.result.get("corrected_path"):
+        src = Path(vocal_job.result["corrected_path"])
+        if src.is_file():
+            corrected_file = "corrected.wav"
+            shutil.copy2(str(src), str(rec_dir / corrected_file))
+
+    if vocal_job.input_path.is_file():
+        vocal_file = "vocal.wav"
+        shutil.copy2(str(vocal_job.input_path), str(rec_dir / vocal_file))
+
+    try:
+        info = sf.info(str(rec_dir / vocal_file)) if vocal_file else None
+        rec_duration = info.duration if info else 0.0
+    except Exception:
+        rec_duration = 0.0
+
+    recording = {
+        "id": rec_id,
+        "created_at": time.time(),
+        "duration": rec_duration,
+        "section_start": section_start,
+        "section_end": section_end,
+        "vocal_file": vocal_file,
+        "corrected_file": corrected_file,
+        "harmonies": harmonies,
+    }
+
+    # Update session.json
+    meta_path = session_dir / "session.json"
+    with open(meta_path) as f:
+        meta = json.load(f)
+    meta.setdefault("recordings", []).append(recording)
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+
+    return recording
+
+
+@app.post("/api/sessions/{session_id}/recordings")
+async def save_recording(session_id: str, req: SaveRecordingRequest):
+    """Save a recording and its generated harmonies to the song session."""
+    session_dir = (SESSIONS_DIR / session_id).resolve()
+    if not session_dir.is_relative_to(SESSIONS_DIR.resolve()) or not session_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    vocal_job = jobs.get(req.vocal_job_id)
+    if not vocal_job or not vocal_job.result:
+        raise HTTPException(status_code=404, detail="Vocal job not found or not completed")
+
+    rec_id = f"rec_{uuid.uuid4().hex[:6]}"
+
+    # File copies are blocking I/O — run off the event loop
+    await asyncio.get_event_loop().run_in_executor(
+        None, _persist_recording,
+        session_dir, rec_id, vocal_job, req.section_start, req.section_end,
+    )
+
+    return {"recording_id": rec_id}
+
+
+def _recording_urls(session_id: str, rec: dict) -> dict:
+    """Add resolved URLs to a recording entry."""
+    rec_id = rec["id"]
+    base = f"/api/sessions/{session_id}/recordings/{rec_id}"
+    result = {
+        "id": rec_id,
+        "created_at": rec["created_at"],
+        "duration": rec.get("duration", 0),
+        "section_start": rec.get("section_start"),
+        "section_end": rec.get("section_end"),
+        "vocal_url": f"{base}/{rec['vocal_file']}" if rec.get("vocal_file") else None,
+        "corrected_url": f"{base}/{rec['corrected_file']}" if rec.get("corrected_file") else None,
+        "harmonies": [
+            {
+                "interval": h["interval"],
+                "harmony_url": f"{base}/{h['harmony_file']}",
+                "mixed_url": f"{base}/{h['mixed_file']}",
+            }
+            for h in rec.get("harmonies", [])
+        ],
+    }
+    return result
+
+
+@app.get("/api/sessions/{session_id}/recordings")
+async def list_recordings(session_id: str):
+    """List all recordings for a song session."""
+    session_dir = (SESSIONS_DIR / session_id).resolve()
+    if not session_dir.is_relative_to(SESSIONS_DIR.resolve()):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    meta_path = session_dir / "session.json"
+    if not meta_path.is_file():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    with open(meta_path) as f:
+        meta = json.load(f)
+
+    recordings = meta.get("recordings", [])
+    return [_recording_urls(session_id, r) for r in recordings]
+
+
+@app.get("/api/sessions/{session_id}/recordings/{recording_id}/{filename}")
+async def get_recording_file(session_id: str, recording_id: str, filename: str):
+    """Serve an audio file from a recording."""
+    session_dir = (SESSIONS_DIR / session_id).resolve()
+    if not session_dir.is_relative_to(SESSIONS_DIR.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid session")
+
+    file_path = (session_dir / "recordings" / recording_id / filename).resolve()
+    if not file_path.is_relative_to(session_dir.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(str(file_path), media_type="audio/wav", filename=filename)
+
+
+@app.delete("/api/sessions/{session_id}/recordings/{recording_id}")
+async def delete_recording(session_id: str, recording_id: str):
+    """Delete a recording and its files."""
+    session_dir = (SESSIONS_DIR / session_id).resolve()
+    if not session_dir.is_relative_to(SESSIONS_DIR.resolve()):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    meta_path = session_dir / "session.json"
+    if not meta_path.is_file():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Remove from metadata
+    with open(meta_path) as f:
+        meta = json.load(f)
+
+    recordings = meta.get("recordings", [])
+    meta["recordings"] = [r for r in recordings if r["id"] != recording_id]
+
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+
+    # Remove files
+    rec_dir = session_dir / "recordings" / recording_id
+    if rec_dir.is_dir():
+        shutil.rmtree(str(rec_dir), ignore_errors=True)
+
+    return {"status": "deleted"}
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────

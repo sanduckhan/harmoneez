@@ -38,6 +38,7 @@ export function PracticePage() {
     <PracticeView
       onBack={() => navigate(`/song/${id}`)}
       onChangeKey={() => navigate(`/song/${id}`)}
+      onViewHarmonies={() => navigate(`/song/${id}/harmonies`)}
       resumedSession={resumedData}
     />
   );

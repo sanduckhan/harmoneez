@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { motion } from 'motion/react';
-import type { FlowStep, MelodyNote, PitchSample, PipelineResult } from '../types';
-import { getMelodyData, getAmplitudeData, getPitchContour, uploadFile, startProcessing } from '../api';
+import type { FlowStep, MelodyNote, PitchSample } from '../types';
+import { getMelodyData, getAmplitudeData, getPitchContour, uploadFile, startProcessing, saveRecording } from '../api';
 import type { AmplitudeData, PitchContourData } from '../api';
 import { useJobProgress } from '../hooks/useJobProgress';
 import { usePitchDetection } from '../hooks/usePitchDetection';
@@ -9,7 +9,6 @@ import { PitchCanvas } from './PitchCanvas';
 import type { CanvasMode } from './PitchCanvas';
 import { TransportBar } from './TransportBar';
 import { ProgressPanel } from './ProgressPanel';
-import { ResultsGrid } from './ResultsGrid';
 import { useWebAudioPlayer } from '../hooks/useWebAudioPlayer';
 import { formatTime, getScalePitchClasses, findActiveNote, NOTE_NAMES } from '../utils';
 
@@ -23,10 +22,11 @@ interface ResumedSession {
 interface Props {
   onBack: () => void;
   onChangeKey?: () => void;
+  onViewHarmonies?: () => void;
   resumedSession?: ResumedSession;
 }
 
-export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
+export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSession }: Props) {
   const [step, setStep] = useState<FlowStep>('loading');
 
   // Reference track
@@ -81,7 +81,6 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
   const [vocalJobId, setVocalJobId] = useState<string | null>(null);
   const [processingVocal, setProcessingVocal] = useState(false);
   const vocalProgress = useJobProgress(vocalJobId, processingVocal);
-  const [result, setResult] = useState<PipelineResult | null>(null);
 
   // Section selection
   const [selStart, setSelStart] = useState<number | null>(null);
@@ -240,6 +239,7 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
         end: selEnd ?? undefined,
         pitch_correct: true,
         harmony_volume: 0.7,
+        skip_separation: true,
       });
     } catch (e) {
       alert(`Processing failed: ${e}`);
@@ -251,9 +251,24 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
   // Watch vocal processing completion
   useEffect(() => {
     if (vocalProgress?.status === 'completed' && vocalProgress.result) {
-      setResult(vocalProgress.result);
       setProcessingVocal(false);
-      setStep('results');
+
+      // Persist recording then navigate to harmonies page
+      if (refJobId && vocalJobId) {
+        saveRecording(refJobId, {
+          vocal_job_id: vocalJobId,
+          section_start: selStart,
+          section_end: selEnd,
+        }).then(() => {
+          onViewHarmonies?.();
+        }).catch(err => {
+          console.warn('Failed to save recording:', err);
+          alert('Failed to save recording. You can try again.');
+          setStep('review');
+        });
+      } else {
+        onViewHarmonies?.();
+      }
     }
     if (vocalProgress?.status === 'failed') {
       setProcessingVocal(false);
@@ -306,7 +321,7 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
 
         case 'r': // R — start recording (guide) or re-record (review/results)
           if (step === 'guide') startRecording();
-          else if (step === 'review' || step === 'results') reRecord();
+          else if (step === 'review') reRecord();
           break;
 
         case 'Escape': // Escape — stop recording or clear selection
@@ -492,18 +507,6 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
         <ProgressPanel progress={vocalProgress} />
       )}
 
-      {/* Results */}
-      {step === 'results' && result && vocalJobId && (
-        <div className="space-y-4">
-          <ResultsGrid jobId={vocalJobId} result={result} />
-          <button
-            onClick={reRecord}
-            className="text-xs font-mono text-[var(--text-muted)] hover:text-[var(--amber)] transition-colors uppercase tracking-wider"
-          >
-            Record again
-          </button>
-        </div>
-      )}
 
       {/* Back button */}
       <button

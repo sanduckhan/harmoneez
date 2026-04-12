@@ -1,11 +1,14 @@
 """Main pipeline orchestrator with progress callbacks."""
 
+import logging
 import tempfile
 from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
 import soundfile as sf
+
+logger = logging.getLogger(__name__)
 
 from .separation import separate_vocals
 from .key_detection import detect_key, detect_key_changes
@@ -150,6 +153,14 @@ def run_pipeline(
         vocals_audio, instrumental_audio, sr = separate_vocals(input_path, tmp_dir)
     progress("separating", f"Vocal track: {len(vocals_audio) / sr:.1f}s at {sr}Hz", 1, total_steps)
 
+    # Debug: log audio stats to help diagnose "no melody" errors
+    rms = float(np.sqrt(np.mean(vocals_audio ** 2)))
+    peak = float(np.max(np.abs(vocals_audio)))
+    logger.info(
+        "Vocal audio stats: duration=%.1fs sr=%d rms=%.6f peak=%.6f skip_sep=%s",
+        len(vocals_audio) / sr, sr, rms, peak, skip_separation,
+    )
+
     # Step 2: Detect key (skip if already provided). Key detection uses the
     # full original mix (not the cropped section) for best harmonic context.
     if key:
@@ -169,10 +180,10 @@ def run_pipeline(
         else:
             progress("detecting_key", f"Key: {confirmed_key} (confidence: {confidence:.2f})", 2, total_steps)
 
-    # Crop to section — now a no-op for the Demucs path (already cropped
-    # pre-separation), still runs for skip_separation.
+    # Crop to section — skip when pre-cropped (Demucs path) or when
+    # skip_separation is True (mic recording IS already the section).
     vocals_path = tmp_dir / "vocals.wav"
-    if want_section and not pre_cropped:
+    if want_section and not pre_cropped and not skip_separation:
         start_sample = int(start * sr) if start else 0
         end_sample = int(end * sr) if end else len(vocals_audio)
         end_sample = min(end_sample, len(vocals_audio))
@@ -209,6 +220,12 @@ def run_pipeline(
 
     # Step 4: Extract melody
     progress("extracting_melody", "Extracting melody notes...", 4, total_steps)
+    logger.info(
+        "Melody input: path=%s duration=%.1fs rms=%.6f peak=%.6f",
+        vocals_path, len(vocals_audio) / sr,
+        float(np.sqrt(np.mean(vocals_audio ** 2))),
+        float(np.max(np.abs(vocals_audio))),
+    )
     melody_notes = extract_melody(vocals_path)
     progress("extracting_melody", f"Found {len(melody_notes)} notes", 4, total_steps)
 

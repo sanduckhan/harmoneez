@@ -37,7 +37,7 @@ interface Props {
 const MARGIN_LEFT = 44;
 const MARGIN_BOTTOM = 24;
 const DEFAULT_VISIBLE_SECONDS = 12;
-const NOW_FRACTION = 0.7;
+const NOW_FRACTION = 0.3;
 
 const BG = '#06060a';
 const GRID_MAJOR = 'rgba(70, 70, 100, 0.5)';
@@ -80,7 +80,8 @@ export function PitchCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
   const visSecsRef = useRef(DEFAULT_VISIBLE_SECONDS);
-  const panOffsetRef = useRef(0); // horizontal pan offset in seconds (0 = centered on playhead)
+  // Absolute time of the left edge of the view (null = follow mode, auto-center on playhead)
+  const viewStartRef = useRef<number | null>(null);
   const pitchRange = useRef(computePitchRange(melodyNotes));
   const isDragging = useRef(false);
   const dragOriginX = useRef(0); // mouse X at drag start, for distance threshold
@@ -128,8 +129,26 @@ export function PitchCanvas({
     const DRAW_W = w - MARGIN_LEFT;
     const DRAW_H = h - MARGIN_BOTTOM;
     const VIS = visSecsRef.current;
-    const windowStart = t - VIS * NOW_FRACTION + panOffsetRef.current;
-    const windowEnd = t + VIS * (1 - NOW_FRACTION) + panOffsetRef.current;
+
+    // Follow mode (viewStartRef null): view is anchored so playhead sits at NOW_FRACTION.
+    // Free mode (viewStartRef set): view is fixed, playhead moves freely.
+    // During playback in free mode, once the playhead reaches the anchor point,
+    // snap back to follow mode.
+    const followStart = t - VIS * NOW_FRACTION;
+    let windowStart: number;
+    if (viewStartRef.current === null) {
+      windowStart = followStart;
+    } else {
+      // Check if playhead has reached or passed the anchor point
+      const anchorTime = viewStartRef.current + VIS * NOW_FRACTION;
+      if (isPlayingRef.current && t >= anchorTime) {
+        viewStartRef.current = null;
+        windowStart = followStart;
+      } else {
+        windowStart = viewStartRef.current;
+      }
+    }
+    const windowEnd = windowStart + VIS;
     const { minMidi, maxMidi } = pitchRange.current;
     const midiRange = maxMidi - minMidi || 1;
 
@@ -330,20 +349,24 @@ export function PitchCanvas({
       }
     }
 
-    // 7. Now-marker
-    const nowX = MARGIN_LEFT + DRAW_W * NOW_FRACTION;
-    const grad = ctx.createLinearGradient(nowX - 30, 0, nowX + 30, 0);
-    grad.addColorStop(0, 'rgba(245, 166, 35, 0)');
-    grad.addColorStop(0.5, AMBER_GLOW);
-    grad.addColorStop(1, 'rgba(245, 166, 35, 0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(nowX - 30, 0, 60, DRAW_H);
-    ctx.beginPath();
-    ctx.strokeStyle = AMBER;
-    ctx.lineWidth = 2;
-    ctx.moveTo(nowX, 0);
-    ctx.lineTo(nowX, DRAW_H);
-    ctx.stroke();
+    // 7. Now-marker — at anchor when in follow mode, at true position otherwise
+    const nowX = viewStartRef.current === null
+      ? MARGIN_LEFT + DRAW_W * NOW_FRACTION
+      : timeToX(t);
+    if (nowX >= MARGIN_LEFT && nowX <= w) {
+      const grad = ctx.createLinearGradient(nowX - 30, 0, nowX + 30, 0);
+      grad.addColorStop(0, 'rgba(245, 166, 35, 0)');
+      grad.addColorStop(0.5, AMBER_GLOW);
+      grad.addColorStop(1, 'rgba(245, 166, 35, 0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(nowX - 30, 0, 60, DRAW_H);
+      ctx.beginPath();
+      ctx.strokeStyle = AMBER;
+      ctx.lineWidth = 2;
+      ctx.moveTo(nowX, 0);
+      ctx.lineTo(nowX, DRAW_H);
+      ctx.stroke();
+    }
   }, [melodyNotes, duration]);
 
   // Store isPlaying and render in refs so the animation loop never restarts
@@ -405,7 +428,6 @@ export function PitchCanvas({
   // Kick the loop when isPlaying becomes true (no second loop — reuses the stable one)
   useEffect(() => {
     if (isPlaying) {
-      panOffsetRef.current = 0; // reset pan when playback starts
       animRef.current = requestAnimationFrame(loopRef.current);
       return () => cancelAnimationFrame(animRef.current);
     } else {
@@ -414,10 +436,11 @@ export function PitchCanvas({
     }
   }, [isPlaying]);
 
-  // Redraw when paused (scrubbing, transpose change, or programmatic seek)
+  // Redraw when paused (programmatic seek via transport bar, skip-to-start, etc.)
   useEffect(() => {
     if (!isPlaying) {
-      panOffsetRef.current = 0; // reset pan on seek
+      // Programmatic seek (e.g. skip-to-start) → snap back to follow mode
+      viewStartRef.current = null;
       loopRef.current();
     }
   }, [isPlaying, seekVersion]);
@@ -430,7 +453,7 @@ export function PitchCanvas({
     const x = clientX - rect.left;
     const DRAW_W = rect.width - MARGIN_LEFT;
     const VIS = visSecsRef.current;
-    const windowStart = getTimeRef.current() - VIS * NOW_FRACTION + panOffsetRef.current;
+    const windowStart = viewStartRef.current ?? (getTimeRef.current() - VIS * NOW_FRACTION);
     return windowStart + ((x - MARGIN_LEFT) / DRAW_W) * VIS;
   }, []);
 
@@ -447,7 +470,11 @@ export function PitchCanvas({
       selStartRef.current = clampedT;
       selEndRef.current = clampedT;
     } else {
-      // Guide mode: click to seek
+      // Guide mode: click to seek — freeze view, move playhead only
+      const VIS = visSecsRef.current;
+      if (viewStartRef.current === null) {
+        viewStartRef.current = getTimeRef.current() - VIS * NOW_FRACTION;
+      }
       onScrubRef.current?.(clampedT);
       requestAnimationFrame(() => loopRef.current());
     }
@@ -491,11 +518,19 @@ export function PitchCanvas({
         onRegionSelectRef.current?.(s, end);
       } else {
         // Too short drag — clear and seek instead
+        const VIS = visSecsRef.current;
+        if (viewStartRef.current === null) {
+          viewStartRef.current = getTimeRef.current() - VIS * NOW_FRACTION;
+        }
         onClearSelectionRef.current?.();
         onScrubRef.current?.(Math.max(0, Math.min(duration, ss)));
       }
     } else {
-      // Short click → seek
+      // Short click → seek — freeze view, move playhead only
+      const VIS = visSecsRef.current;
+      if (viewStartRef.current === null) {
+        viewStartRef.current = getTimeRef.current() - VIS * NOW_FRACTION;
+      }
       const t = getTimeFromX(e.clientX);
       const clampedT = Math.max(0, Math.min(duration, t));
       onClearSelectionRef.current?.();
@@ -525,8 +560,12 @@ export function PitchCanvas({
       if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
         e.preventDefault();
         if (!isPlayingRef.current) {
-          const panDelta = (e.deltaX / 300) * visSecsRef.current;
-          panOffsetRef.current += panDelta;
+          const VIS = visSecsRef.current;
+          // Enter free mode if not already
+          if (viewStartRef.current === null) {
+            viewStartRef.current = getTimeRef.current() - VIS * NOW_FRACTION;
+          }
+          viewStartRef.current += (e.deltaX / 300) * VIS;
           loopRef.current();
         }
       }

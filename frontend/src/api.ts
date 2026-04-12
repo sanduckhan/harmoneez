@@ -1,4 +1,4 @@
-import type { UploadResult, KeyDetectionResult, PipelineResult, MelodyNote } from './types';
+import type { UploadResult, KeyDetectionResult, PipelineResult, MelodyNote, RecordingInfo } from './types';
 
 const BASE = '';
 
@@ -23,6 +23,7 @@ export async function startProcessing(jobId: string, params: {
   pitch_correct?: boolean;
   intervals?: string;
   harmony_volume?: number;
+  skip_separation?: boolean;
 }): Promise<void> {
   const res = await fetch(`${BASE}/api/process/${jobId}`, {
     method: 'POST',
@@ -132,4 +133,32 @@ export async function getPitchData(jobId: string): Promise<PitchFrame[]> {
   const res = await fetch(`${BASE}/api/pitch-data/${jobId}`);
   if (!res.ok) return [];
   return res.json();
+}
+
+// ── Recordings ────────────────────────────────────────────────────────────────
+
+export async function saveRecording(sessionId: string, params: {
+  vocal_job_id: string;
+  section_start: number | null;
+  section_end: number | null;
+}): Promise<{ recording_id: string }> {
+  const res = await fetch(`${BASE}/api/sessions/${sessionId}/recordings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`Save recording failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getRecordings(sessionId: string): Promise<RecordingInfo[]> {
+  const res = await fetch(`${BASE}/api/sessions/${sessionId}/recordings`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function deleteRecording(sessionId: string, recordingId: string): Promise<void> {
+  await fetch(`${BASE}/api/sessions/${sessionId}/recordings/${recordingId}`, {
+    method: 'DELETE',
+  });
 }

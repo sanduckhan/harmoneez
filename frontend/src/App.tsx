@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { HomePage } from './pages/HomePage';
 import { SongPage } from './pages/SongPage';
 import { PracticePage } from './pages/PracticePage';
+import { HarmoniesPage } from './pages/HarmoniesPage';
 
 function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
@@ -74,6 +75,7 @@ function App() {
       <Route path="/" element={<Layout><HomePage /></Layout>} />
       <Route path="/song/:id" element={<Layout><SongPage /></Layout>} />
       <Route path="/song/:id/practice" element={<WideLayout><PracticePage /></WideLayout>} />
+      <Route path="/song/:id/harmonies" element={<Layout><HarmoniesPage /></Layout>} />
     </Routes>
   );
 }

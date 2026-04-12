@@ -19,8 +19,8 @@ export interface KeyDetectionResult {
 
 export interface IntervalFile {
   interval: string;
-  harmony_path: string;
-  mixed_path: string;
+  harmony_path?: string;
+  mixed_path?: string;
   harmony_url: string;
   mixed_url: string;
 }
@@ -56,7 +56,7 @@ export const ALL_KEYS = [
   'Bb major', 'Bb minor', 'B major', 'B minor',
 ];
 
-export type FlowStep = 'loading' | 'guide' | 'recording' | 'review' | 'generating' | 'results';
+export type FlowStep = 'loading' | 'guide' | 'recording' | 'review' | 'generating';
 
 export interface MelodyNote {
   start_sec: number;
@@ -76,3 +76,20 @@ export const INTERVAL_TYPES = [
   '3rd-above', '3rd-below', '5th', '6th', 'octave',
   'unison', 'drone-root', 'drone-5th',
 ];
+
+export interface RecordingHarmony {
+  interval: string;
+  harmony_url: string;
+  mixed_url: string;
+}
+
+export interface RecordingInfo {
+  id: string;
+  created_at: number;
+  duration: number;
+  section_start: number | null;
+  section_end: number | null;
+  vocal_url: string | null;
+  corrected_url: string | null;
+  harmonies: RecordingHarmony[];
+}

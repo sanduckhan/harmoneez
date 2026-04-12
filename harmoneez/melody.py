@@ -1,10 +1,13 @@
 """Melody extraction using Basic Pitch."""
 
+import logging
 import statistics
 from pathlib import Path
 from typing import Optional
 
 from .utils import VELOCITY_THRESHOLD
+
+logger = logging.getLogger(__name__)
 
 # Minimum note duration in seconds — shorter notes are likely percussion/noise
 MIN_MELODY_DURATION = 0.08
@@ -39,20 +42,35 @@ def extract_melody(vocals_path: Path) -> list[tuple[float, float, int, float]]:
         model_output, midi_data, note_events = predict(
             str(vocals_path), model_or_model_path=_get_model()
         )
-    except (ValueError, IndexError):
+    except (ValueError, IndexError) as exc:
         # Basic Pitch can crash on very short or silent audio (e.g.
         # np.max on a zero-size onset array). Treat as "no notes."
+        logger.error("Basic Pitch crashed: %s (file: %s)", exc, vocals_path)
         raise ValueError("No melody notes detected in the vocal track.")
 
+    logger.info(
+        "Basic Pitch raw output: %d note events from %s",
+        len(note_events), vocals_path,
+    )
+
     notes = []
+    filtered_velocity = 0
+    filtered_duration = 0
     for event in note_events:
         start, end, midi_pitch, velocity = event[0], event[1], event[2], event[3]
         if velocity < VELOCITY_THRESHOLD:
+            filtered_velocity += 1
             continue
         duration = end - start
         if duration < MIN_MELODY_DURATION:
+            filtered_duration += 1
             continue
         notes.append((start, end, int(midi_pitch), velocity))
+
+    logger.info(
+        "After filtering: %d notes kept, %d filtered by velocity (< %.2f), %d filtered by duration (< %.2fs)",
+        len(notes), filtered_velocity, VELOCITY_THRESHOLD, filtered_duration, MIN_MELODY_DURATION,
+    )
 
     # Remove pitch outliers — notes far from the median are likely artifacts
     if len(notes) > 5:

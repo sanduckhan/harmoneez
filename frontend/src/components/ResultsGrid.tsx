@@ -1,15 +1,21 @@
 import { useState, useCallback } from 'react';
 import { motion } from 'motion/react';
-import type { PipelineResult } from '../types';
+import type { IntervalFile } from '../types';
 import { IntervalCard } from './IntervalCard';
 import { downloadZip } from '../api';
 
 interface Props {
-  jobId: string;
-  result: PipelineResult;
+  /** Job ID for zip download (optional — omit for persisted recordings). */
+  jobId?: string;
+  /** Harmony files to display. */
+  files: IntervalFile[];
+  /** Instrumental backing track URL (optional). */
+  instrumentalUrl?: string;
+  /** Custom download handler. If omitted, uses default downloadZip with jobId. */
+  onDownload?: (intervals: string[]) => Promise<void>;
 }
 
-export function ResultsGrid({ jobId, result }: Props) {
+export function ResultsGrid({ jobId, files, instrumentalUrl, onDownload }: Props) {
   const [playingInterval, setPlayingInterval] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
@@ -32,18 +38,24 @@ export function ResultsGrid({ jobId, result }: Props) {
     });
   }, []);
 
+  const canDownload = !!(jobId || onDownload);
+
   const handleDownload = useCallback(async () => {
     if (selected.size === 0) return;
     setDownloading(true);
     try {
-      await downloadZip(jobId, Array.from(selected));
+      if (onDownload) {
+        await onDownload(Array.from(selected));
+      } else if (jobId) {
+        await downloadZip(jobId, Array.from(selected));
+      }
     } finally {
       setDownloading(false);
     }
-  }, [jobId, selected]);
+  }, [jobId, selected, onDownload]);
 
   const selectAll = () => {
-    setSelected(new Set(result.files.map((f) => f.interval)));
+    setSelected(new Set(files.map((f) => f.interval)));
   };
 
   return (
@@ -61,7 +73,7 @@ export function ResultsGrid({ jobId, result }: Props) {
         </div>
         <div className="flex items-center gap-4">
           {/* Instrumental backing toggle */}
-          {result.instrumental_url && (
+          {instrumentalUrl && (
             <label className="flex items-center gap-2 cursor-pointer">
               <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)]">
                 With Band
@@ -91,29 +103,31 @@ export function ResultsGrid({ jobId, result }: Props) {
           >
             Select All
           </button>
-          <button
-            onClick={handleDownload}
-            disabled={selected.size === 0 || downloading}
-            className={`
-              px-4 py-1.5 rounded text-xs font-mono uppercase tracking-wider transition-all
-              ${selected.size > 0
-                ? 'bg-[var(--amber)] text-[var(--bg-deep)] font-semibold hover:shadow-[0_0_12px_var(--amber-glow)]'
-                : 'bg-[var(--bg-surface)] text-[var(--text-muted)] border border-[var(--border)] cursor-not-allowed'}
-            `}
-          >
-            {downloading ? 'Exporting...' : `Export ${selected.size > 0 ? `(${selected.size})` : ''}`}
-          </button>
+          {canDownload && (
+            <button
+              onClick={handleDownload}
+              disabled={selected.size === 0 || downloading}
+              className={`
+                px-4 py-1.5 rounded text-xs font-mono uppercase tracking-wider transition-all
+                ${selected.size > 0
+                  ? 'bg-[var(--amber)] text-[var(--bg-deep)] font-semibold hover:shadow-[0_0_12px_var(--amber-glow)]'
+                  : 'bg-[var(--bg-surface)] text-[var(--text-muted)] border border-[var(--border)] cursor-not-allowed'}
+              `}
+            >
+              {downloading ? 'Exporting...' : `Export ${selected.size > 0 ? `(${selected.size})` : ''}`}
+            </button>
+          )}
         </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-        {result.files.map((f, i) => (
+        {files.map((f, i) => (
           <IntervalCard
             key={f.interval}
             interval={f.interval}
             harmonyUrl={f.harmony_url}
             mixedUrl={f.mixed_url}
-            instrumentalUrl={result.instrumental_url}
+            instrumentalUrl={instrumentalUrl}
             withBacking={withBacking}
             isPlaying={playingInterval === f.interval}
             isSelected={selected.has(f.interval)}

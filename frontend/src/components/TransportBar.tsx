@@ -81,7 +81,7 @@ export function TransportBar({
   const handleRecord = useCallback(() => {
     if (step === 'guide') onStartRecording();
     else if (step === 'recording') onStopRecording();
-    else if (step === 'review' || step === 'results') onReRecord();
+    else if (step === 'review') onReRecord();
   }, [step, onStartRecording, onStopRecording, onReRecord]);
 
   const pct = duration > 0 ? (currentTime / duration) * 100 : 0;
