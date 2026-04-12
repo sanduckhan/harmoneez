@@ -3,11 +3,13 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 interface UseWebAudioPlayerOptions {
   url: string | null;
   detune: number; // cents (semitones * 100)
+  muted?: boolean;
   onTimeUpdate?: (time: number) => void;
 }
 
-export function useWebAudioPlayer({ url, detune, onTimeUpdate }: UseWebAudioPlayerOptions) {
+export function useWebAudioPlayer({ url, detune, muted = false, onTimeUpdate }: UseWebAudioPlayerOptions) {
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainRef = useRef<GainNode | null>(null);
   const bufferRef = useRef<AudioBuffer | null>(null);
   const sourceRef = useRef<AudioBufferSourceNode | null>(null);
   const sourceIdRef = useRef(0);          // incremented on each new source
@@ -99,10 +101,17 @@ export function useWebAudioPlayer({ url, detune, onTimeUpdate }: UseWebAudioPlay
 
     const id = ++sourceIdRef.current;
     const rate = getPlaybackRate();
+    // Create gain node if needed
+    if (!gainRef.current) {
+      gainRef.current = ctx.createGain();
+      gainRef.current.connect(ctx.destination);
+    }
+    gainRef.current.gain.value = muted ? 0 : 1;
+
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.playbackRate.value = rate;
-    source.connect(ctx.destination);
+    source.connect(gainRef.current);
 
     source.onended = () => {
       // Only handle if this is still the active source
@@ -161,6 +170,13 @@ export function useWebAudioPlayer({ url, detune, onTimeUpdate }: UseWebAudioPlay
   }, [play, pause]);
 
   const getTime = useCallback(() => getCurrentTime(), []);
+
+  // Update gain when muted changes (no restart needed)
+  useEffect(() => {
+    if (gainRef.current) {
+      gainRef.current.gain.value = muted ? 0 : 1;
+    }
+  }, [muted]);
 
   // Update playback rate when detune changes during playback
   useEffect(() => {

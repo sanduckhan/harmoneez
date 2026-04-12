@@ -1,18 +1,17 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { motion } from 'motion/react';
-import type { MelodyNote, PitchSample, PipelineResult } from '../types';
+import type { FlowStep, MelodyNote, PitchSample, PipelineResult } from '../types';
 import { getMelodyData, getAmplitudeData, getPitchContour, uploadFile, startProcessing } from '../api';
 import type { AmplitudeData, PitchContourData } from '../api';
 import { useJobProgress } from '../hooks/useJobProgress';
 import { usePitchDetection } from '../hooks/usePitchDetection';
 import { PitchCanvas } from './PitchCanvas';
 import type { CanvasMode } from './PitchCanvas';
+import { TransportBar } from './TransportBar';
 import { ProgressPanel } from './ProgressPanel';
 import { ResultsGrid } from './ResultsGrid';
 import { useWebAudioPlayer } from '../hooks/useWebAudioPlayer';
 import { formatTime, getScalePitchClasses, findActiveNote, NOTE_NAMES } from '../utils';
-
-type FlowStep = 'loading' | 'guide' | 'recording' | 'review' | 'generating' | 'results';
 
 interface ResumedSession {
   jobId: string;
@@ -38,22 +37,32 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
   const [amplitudeData, setAmplitudeData] = useState<AmplitudeData | null>(null);
   const [pitchContourData, setPitchContourData] = useState<PitchContourData | null>(null);
   const [refDuration, setRefDuration] = useState(resumedSession?.duration ?? 0);
-  const [audioSource, setAudioSource] = useState<'mix' | 'vocals' | 'instrumental'>('mix');
+  const [vocalsOn, setVocalsOn] = useState(true);
+  const [bandOn, setBandOn] = useState(true);
   const [seekVersion, setSeekVersion] = useState(0);
 
-  // Audio — always plays from processed files (full_mix, vocals, instrumental)
+  // Audio — derive source from mute toggles
   const audioSrcUrl = refJobId ? (
-    audioSource === 'vocals' ? `/api/files/${refJobId}/vocals.wav` :
-    audioSource === 'instrumental' ? `/api/files/${refJobId}/instrumental.wav` :
-    `/api/files/${refJobId}/full_mix.wav`
+    vocalsOn && bandOn ? `/api/files/${refJobId}/full_mix.wav` :
+    vocalsOn ? `/api/files/${refJobId}/vocals.wav` :
+    bandOn ? `/api/files/${refJobId}/instrumental.wav` :
+    `/api/files/${refJobId}/full_mix.wav` // both off — muted via gain node
   ) : null;
 
-  const currentTimeRef = useRef(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const lastTimeUpdateRef = useRef(0);
 
   const webAudio = useWebAudioPlayer({
     url: audioSrcUrl,
-    detune: 0, // audio is already transposed server-side
-    onTimeUpdate: (t) => { currentTimeRef.current = t; },
+    detune: 0,
+    muted: !vocalsOn && !bandOn,
+    onTimeUpdate: (t) => {
+      const now = Date.now();
+      if (now - lastTimeUpdateRef.current > 250) {
+        lastTimeUpdateRef.current = now;
+        setCurrentTime(t);
+      }
+    },
   });
 
   const isPlaying = webAudio.playing;
@@ -147,7 +156,7 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
     } catch {
       alert('Microphone access denied. Please allow mic access in your browser settings.');
     }
-  }, []);
+  }, [webAudio]);
 
   const [recordingPaused, setRecordingPaused] = useState(false);
   const pausedElapsedRef = useRef(0);
@@ -158,14 +167,14 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
     mediaRecorderRef.current?.pause();
     webAudio.pause();
     setRecordingPaused(true);
-  }, []);
+  }, [webAudio]);
 
   const resumeRecording = useCallback(() => {
     recordStartTimeRef.current = Date.now();
     mediaRecorderRef.current?.resume();
     webAudio.play();
     setRecordingPaused(false);
-  }, []);
+  }, [webAudio]);
 
   const stopRecording = useCallback(() => {
     mediaRecorderRef.current?.stop();
@@ -175,7 +184,7 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
     webAudio.pause();
     setRecordingPaused(false);
     setStep('review');
-  }, []);
+  }, [webAudio]);
 
   // Pitch detection during recording (disabled when paused)
   usePitchDetection({
@@ -193,6 +202,7 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
 
   const handleScrub = useCallback((time: number) => {
     webAudio.seek(time);
+    setCurrentTime(time);
     if (debugVocalsRef.current) {
       debugVocalsRef.current.currentTime = time;
     }
@@ -418,82 +428,33 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
               onClearSelection={clearSelection}
               seekVersion={seekVersion}
             />
+
+            {/* Transport bar — attached to bottom of canvas */}
+            <TransportBar
+              step={step}
+              isPlaying={isPlaying}
+              recordingPaused={recordingPaused}
+              currentTime={currentTime}
+              duration={refDuration || webAudio.duration}
+              vocalsOn={vocalsOn}
+              bandOn={bandOn}
+              selStart={selStart}
+              selEnd={selEnd}
+              onPlay={playReference}
+              onPause={pauseReference}
+              onSeekToStart={() => { handleScrub(0); setSeekVersion(v => v + 1); }}
+              onSeek={(t) => { handleScrub(t); setSeekVersion(v => v + 1); }}
+              onStartRecording={startRecording}
+              onStopRecording={stopRecording}
+              onPauseRecording={pauseRecording}
+              onResumeRecording={resumeRecording}
+              onReRecord={reRecord}
+              onToggleVocals={() => setVocalsOn(v => !v)}
+              onToggleBand={() => setBandOn(v => !v)}
+              onGenerateHarmonies={generateHarmonies}
+            />
           </div>
 
-          {/* Controls */}
-          <div className="flex items-center gap-3">
-            {step === 'guide' && (
-              <>
-                <button
-                  onClick={isPlaying ? pauseReference : playReference}
-                  className="px-4 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] hover:border-[var(--amber)]/50 text-sm font-mono text-[var(--text-secondary)] transition-all"
-                >
-                  {isPlaying ? 'PAUSE' : 'PREVIEW'}
-                </button>
-                <button
-                  onClick={startRecording}
-                  className="flex items-center gap-2 px-6 py-2 rounded-lg bg-[var(--red)] text-white font-mono uppercase tracking-wider text-sm hover:shadow-[0_0_20px_var(--red-glow)] transition-all"
-                >
-                  <div className="w-2.5 h-2.5 rounded-full bg-white" />
-                  Record
-                </button>
-                {/* Audio source selector */}
-                <div className="flex items-center gap-1 ml-auto bg-[var(--bg-surface)] rounded border border-[var(--border)] text-[10px] font-mono overflow-hidden">
-                  {(['mix', 'vocals', 'instrumental'] as const).map((src) => (
-                    <button
-                      key={src}
-                      onClick={() => setAudioSource(src)}
-                      className={`px-2.5 py-1 transition-all uppercase tracking-wider ${
-                        audioSource === src
-                          ? 'bg-[var(--amber)] text-[var(--bg-deep)] font-semibold'
-                          : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-                      }`}
-                    >
-                      {src === 'mix' ? 'Full' : src === 'vocals' ? 'Vocals' : 'Band'}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {step === 'recording' && (
-              <>
-                <button
-                  onClick={recordingPaused ? resumeRecording : pauseRecording}
-                  className="px-4 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] hover:border-[var(--amber)]/50 text-sm font-mono text-[var(--text-secondary)] transition-all"
-                >
-                  {recordingPaused ? 'RESUME' : 'PAUSE'}
-                </button>
-                <button
-                  onClick={stopRecording}
-                  className="flex items-center gap-2 px-6 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] hover:border-[var(--red)] text-sm font-mono text-[var(--text-primary)] transition-all"
-                >
-                  <div className="w-2.5 h-2.5 rounded-sm bg-[var(--red)]" />
-                  Stop
-                </button>
-              </>
-            )}
-
-            {step === 'review' && (
-              <>
-                <button
-                  onClick={reRecord}
-                  className="px-4 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-highlight)] text-xs font-mono uppercase tracking-wider text-[var(--text-secondary)] hover:border-[var(--amber)]/50 transition-all"
-                >
-                  Re-record
-                </button>
-                <button
-                  onClick={generateHarmonies}
-                  className="px-6 py-2 rounded-lg bg-[var(--amber)] text-[var(--bg-deep)] font-mono uppercase tracking-wider text-xs font-bold hover:shadow-[0_0_20px_var(--amber-glow)] transition-all"
-                >
-                  {selStart !== null ? `Generate (${formatTime(selStart)}-${formatTime(selEnd!)})` : 'Generate All'}
-                </button>
-                <span className="text-[10px] font-mono text-[var(--text-muted)] ml-auto">
-                  {selStart !== null ? 'Section selected · Esc to clear' : 'Drag to select section'}
-                </span>
-              </>
-            )}
-          </div>
 
           {/* Debug panel */}
           {refJobId && (
@@ -550,6 +511,7 @@ export function PracticeView({ onBack, onChangeKey, resumedSession }: Props) {
       >
         ← Back
       </button>
+
     </div>
   );
 }

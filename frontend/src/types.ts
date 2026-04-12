@@ -56,6 +56,8 @@ export const ALL_KEYS = [
   'Bb major', 'Bb minor', 'B major', 'B minor',
 ];
 
+export type FlowStep = 'loading' | 'guide' | 'recording' | 'review' | 'generating' | 'results';
+
 export interface MelodyNote {
   start_sec: number;
   end_sec: number;

@@ -80,6 +80,7 @@ export function PitchCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
   const visSecsRef = useRef(DEFAULT_VISIBLE_SECONDS);
+  const panOffsetRef = useRef(0); // horizontal pan offset in seconds (0 = centered on playhead)
   const pitchRange = useRef(computePitchRange(melodyNotes));
   const isDragging = useRef(false);
   const dragOriginX = useRef(0); // mouse X at drag start, for distance threshold
@@ -127,8 +128,8 @@ export function PitchCanvas({
     const DRAW_W = w - MARGIN_LEFT;
     const DRAW_H = h - MARGIN_BOTTOM;
     const VIS = visSecsRef.current;
-    const windowStart = t - VIS * NOW_FRACTION;
-    const windowEnd = t + VIS * (1 - NOW_FRACTION);
+    const windowStart = t - VIS * NOW_FRACTION + panOffsetRef.current;
+    const windowEnd = t + VIS * (1 - NOW_FRACTION) + panOffsetRef.current;
     const { minMidi, maxMidi } = pitchRange.current;
     const midiRange = maxMidi - minMidi || 1;
 
@@ -404,6 +405,7 @@ export function PitchCanvas({
   // Kick the loop when isPlaying becomes true (no second loop — reuses the stable one)
   useEffect(() => {
     if (isPlaying) {
+      panOffsetRef.current = 0; // reset pan when playback starts
       animRef.current = requestAnimationFrame(loopRef.current);
       return () => cancelAnimationFrame(animRef.current);
     } else {
@@ -414,7 +416,10 @@ export function PitchCanvas({
 
   // Redraw when paused (scrubbing, transpose change, or programmatic seek)
   useEffect(() => {
-    if (!isPlaying) loopRef.current();
+    if (!isPlaying) {
+      panOffsetRef.current = 0; // reset pan on seek
+      loopRef.current();
+    }
   }, [isPlaying, seekVersion]);
 
   // Mouse handlers — read from refs to avoid dependency cascades
@@ -425,7 +430,7 @@ export function PitchCanvas({
     const x = clientX - rect.left;
     const DRAW_W = rect.width - MARGIN_LEFT;
     const VIS = visSecsRef.current;
-    const windowStart = getTimeRef.current() - VIS * NOW_FRACTION;
+    const windowStart = getTimeRef.current() - VIS * NOW_FRACTION + panOffsetRef.current;
     return windowStart + ((x - MARGIN_LEFT) / DRAW_W) * VIS;
   }, []);
 
@@ -499,12 +504,49 @@ export function PitchCanvas({
     }
   }, [getTimeFromX, duration]);
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    if (mode !== 'review') return;
-    e.preventDefault();
-    const factor = e.deltaY > 0 ? 1.15 : 0.87;
-    visSecsRef.current = Math.max(4, Math.min(duration, visSecsRef.current * factor));
-  }, [mode, duration]);
+  // Native wheel listener with { passive: false } to actually prevent browser back/forward
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      // Shift + scroll = zoom
+      if (e.shiftKey && e.deltaY !== 0) {
+        e.preventDefault();
+        const factor = e.deltaY > 0 ? 1.15 : 0.87;
+        visSecsRef.current = Math.max(4, Math.min(durationRef.current, visSecsRef.current * factor));
+        loopRef.current();
+        return;
+      }
+      // Horizontal scroll (trackpad swipe) — always prevent browser back/forward
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        e.preventDefault();
+        if (!isPlayingRef.current) {
+          const panDelta = (e.deltaX / 300) * visSecsRef.current;
+          panOffsetRef.current += panDelta;
+          loopRef.current();
+        }
+      }
+    };
+
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+
+    // Disable browser back/forward swipe while hovering canvas
+    const disableOverscroll = () => { document.documentElement.style.overscrollBehaviorX = 'none'; };
+    const restoreOverscroll = () => { document.documentElement.style.overscrollBehaviorX = ''; };
+    canvas.addEventListener('mouseenter', disableOverscroll);
+    canvas.addEventListener('mouseleave', restoreOverscroll);
+
+    return () => {
+      canvas.removeEventListener('wheel', handleWheel);
+      canvas.removeEventListener('mouseenter', disableOverscroll);
+      canvas.removeEventListener('mouseleave', restoreOverscroll);
+      restoreOverscroll();
+    };
+  }, []);
 
   return (
     <canvas
@@ -515,7 +557,6 @@ export function PitchCanvas({
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={() => { if (isDragging.current) { isDragging.current = false; } }}
-      onWheel={handleWheel}
     />
   );
 }
