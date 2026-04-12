@@ -719,6 +719,31 @@ async def get_recording_file(session_id: str, recording_id: str, filename: str):
     return FileResponse(str(file_path), media_type="audio/wav", filename=filename)
 
 
+@app.post("/api/sessions/{session_id}/recordings/{recording_id}/download")
+async def download_recording_zip(session_id: str, recording_id: str):
+    """Download all files from a recording as a ZIP."""
+    session_dir = (SESSIONS_DIR / session_id).resolve()
+    if not session_dir.is_relative_to(SESSIONS_DIR.resolve()):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    rec_dir = (session_dir / "recordings" / recording_id).resolve()
+    if not rec_dir.is_relative_to(session_dir.resolve()) or not rec_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for f in rec_dir.iterdir():
+            if f.is_file() and f.suffix == '.wav':
+                zf.write(f, f.name)
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=harmoneez_{recording_id}.zip"},
+    )
+
+
 @app.delete("/api/sessions/{session_id}/recordings/{recording_id}")
 async def delete_recording(session_id: str, recording_id: str):
     """Delete a recording and its files."""

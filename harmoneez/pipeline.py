@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 from .separation import separate_vocals
 from .key_detection import detect_key, detect_key_changes
 from .pitch_correction import pitch_correct_vocals
-from .melody import extract_melody
+from .melody import extract_melody, extend_notes_to_fill_gaps, f0_fill_gaps
 from .harmony import generate_harmony
 from .renderer import analyze_world, render_harmony
 from .mixer import mix_and_save
@@ -248,6 +248,17 @@ def run_pipeline(
     progress("analyzing", "Analyzing vocal audio...", 5, total_steps)
     if world_data is None:
         world_data = analyze_world(vocals_audio, sr)
+
+    # Fill melody gaps using note extension + WORLD F0 contour
+    pre_fill_count = len(melody_notes)
+    melody_notes = extend_notes_to_fill_gaps(melody_notes)
+    f0_data, timeaxis_data = world_data[0], world_data[1]
+    melody_notes = f0_fill_gaps(melody_notes, f0_data, timeaxis_data, confirmed_key)
+    if len(melody_notes) > pre_fill_count:
+        logger.info(
+            "Gap-filling: %d → %d notes (+%d)",
+            pre_fill_count, len(melody_notes), len(melody_notes) - pre_fill_count,
+        )
 
     # Steps 5+: Generate + render + mix for each interval
     output_files = []

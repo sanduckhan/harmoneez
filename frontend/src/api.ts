@@ -162,3 +162,17 @@ export async function deleteRecording(sessionId: string, recordingId: string): P
     method: 'DELETE',
   });
 }
+
+export async function downloadRecordingZip(sessionId: string, recordingId: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/sessions/${sessionId}/recordings/${recordingId}/download`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`Download failed: ${res.statusText}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `harmoneez_${recordingId}.zip`;
+  a.click();
+  URL.revokeObjectURL(url);
+}

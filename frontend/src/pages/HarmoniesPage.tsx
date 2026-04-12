@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { resumeSession, getRecordings, deleteRecording } from '../api';
+import { resumeSession, getRecordings, deleteRecording, downloadRecordingZip } from '../api';
 import type { RecordingInfo } from '../types';
 import { StemMixer } from '../components/StemMixer';
 import { formatTime } from '../utils';
@@ -109,6 +109,7 @@ export function HarmoniesPage() {
           {[...recordings].reverse().map((rec, i) => (
             <RecordingPanel
               key={rec.id}
+              sessionId={id!}
               recording={rec}
               index={recordings.length - i}
               isExpanded={expandedId === rec.id}
@@ -124,6 +125,7 @@ export function HarmoniesPage() {
 
 
 interface RecordingPanelProps {
+  sessionId: string;
   recording: RecordingInfo;
   index: number;
   isExpanded: boolean;
@@ -131,7 +133,8 @@ interface RecordingPanelProps {
   onDelete: () => void;
 }
 
-function RecordingPanel({ recording, index, isExpanded, onToggle, onDelete }: RecordingPanelProps) {
+function RecordingPanel({ sessionId, recording, index, isExpanded, onToggle, onDelete }: RecordingPanelProps) {
+  const [downloading, setDownloading] = useState(false);
   const date = new Date(recording.created_at * 1000);
   const dateStr = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   const timeStr = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
@@ -204,7 +207,19 @@ function RecordingPanel({ recording, index, isExpanded, onToggle, onDelete }: Re
                 <p className="text-xs font-mono text-[var(--text-muted)] py-4">No harmony files found</p>
               )}
 
-              <div className="flex justify-end">
+              <div className="flex items-center justify-between">
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    setDownloading(true);
+                    try { await downloadRecordingZip(sessionId, recording.id); }
+                    finally { setDownloading(false); }
+                  }}
+                  disabled={downloading}
+                  className="px-4 py-1.5 rounded text-xs font-mono uppercase tracking-wider bg-[var(--amber)] text-[var(--bg-deep)] font-semibold hover:shadow-[0_0_12px_var(--amber-glow)] transition-all disabled:opacity-50"
+                >
+                  {downloading ? 'Exporting...' : 'Export ZIP'}
+                </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); onDelete(); }}
                   className="text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--red)] transition-colors"
