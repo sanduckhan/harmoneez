@@ -136,7 +136,21 @@ def generate_harmony(
             prev_harmony_midi = harmony_midi
 
         else:
-            harmony_midi = diatonic_interval(midi_pitch, scale_pcs, degrees)
+            ideal = diatonic_interval(midi_pitch, scale_pcs, degrees)
+
+            # Voice leading: prefer holding the previous harmony pitch when it's
+            # still close to the ideal target AND forms a consonant interval
+            # with the current melody note. This keeps backing vocals on common
+            # tones instead of mechanically jumping with every melody move.
+            if (
+                prev_harmony_midi is not None
+                and abs(prev_harmony_midi - ideal) <= 2
+                and is_in_scale(prev_harmony_midi, scale_pcs)
+                and 3 <= abs(prev_harmony_midi - midi_pitch) <= 12
+            ):
+                harmony_midi = prev_harmony_midi
+            else:
+                harmony_midi = ideal
 
             shift = harmony_midi - midi_pitch
             safe_min, safe_max = INTERVAL_SAFE_RANGE[interval_type]

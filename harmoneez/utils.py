@@ -53,6 +53,34 @@ HARMONY_PAN = 0.3
 DETUNE_CENTS = 8
 DEFAULT_HARMONY_VOLUME = 0.7
 VELOCITY_THRESHOLD = 0.45
+PORTAMENTO_MS = 30  # ramp inter-note pitch transitions instead of stepping
+
+# Per-interval formant scale: real backup singers at different pitches have
+# different vocal-tract resonances than a pitch-shifted version of the lead.
+# >1.0 lifts formants (brighter / smaller-throat), <1.0 lowers them.
+INTERVAL_FORMANT_SHIFT = {
+    '3rd-above': 1.03,
+    '3rd-below': 0.98,
+    '5th': 1.05,
+    '6th': 1.06,
+    'octave': 1.10,
+    'unison': 1.0,
+    'drone-root': 0.97,
+    'drone-5th': 1.0,
+}
+
+# Per-interval detune in cents (signed). Different sign per voice keeps stacked
+# harmonies from piling up the same offset and sounding chorus-flanged.
+INTERVAL_DETUNE_CENTS = {
+    '3rd-above': +6,
+    '3rd-below': -8,
+    '5th': -7,
+    '6th': +5,
+    'octave': +10,
+    'unison': +3,
+    'drone-root': -4,
+    'drone-5th': +4,
+}
 
 SUPPORTED_EXTENSIONS = {'.wav', '.mp3'}
 

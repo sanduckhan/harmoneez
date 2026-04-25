@@ -5,6 +5,7 @@ import { getMelodyData, getAmplitudeData, getPitchContour, uploadFile, startProc
 import type { AmplitudeData, PitchContourData } from '../api';
 import { useJobProgress } from '../hooks/useJobProgress';
 import { usePitchDetection } from '../hooks/usePitchDetection';
+import { encodeWavFloat32, concatFloat32 } from '../wavEncoder';
 import { PitchCanvas } from './PitchCanvas';
 import type { CanvasMode } from './PitchCanvas';
 import { TransportBar } from './TransportBar';
@@ -69,10 +70,13 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
   const isPlaying = webAudio.playing;
   const scalePCs = useMemo(() => getScalePitchClasses(detectedKey), [detectedKey]);
 
-  // Recording
+  // Recording — lossless capture via AudioWorklet (raw Float32 PCM, no Opus).
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const recordedChunksRef = useRef<Float32Array[]>([]);
+  const recordedSampleRateRef = useRef<number>(44100);
   const pitchSamplesRef = useRef<PitchSample[]>([]);
   const [recordingElapsed, setRecordingElapsed] = useState(0);
   const recordStartTimeRef = useRef(0);
@@ -110,19 +114,31 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
   // Use ref for mic stream to avoid stale closures
   const micStreamRef = useRef<MediaStream | null>(null);
 
+  // Tear down the recording graph (worklet, source, context, mic tracks).
+  const tearDownRecording = useCallback(() => {
+    try { workletNodeRef.current?.disconnect(); } catch {}
+    try { sourceNodeRef.current?.disconnect(); } catch {}
+    workletNodeRef.current = null;
+    sourceNodeRef.current = null;
+    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+      audioCtxRef.current.close().catch(() => {});
+    }
+    audioCtxRef.current = null;
+    micStreamRef.current?.getTracks().forEach(t => t.stop());
+    micStreamRef.current = null;
+    setMicStream(null);
+  }, []);
+
   // Watch for playback end during recording
   const prevPlayingRef = useRef(false);
   useEffect(() => {
     if (prevPlayingRef.current && !isPlaying && step === 'recording') {
       setRecordingPaused(false);
-      mediaRecorderRef.current?.stop();
-      micStreamRef.current?.getTracks().forEach(t => t.stop());
-      micStreamRef.current = null;
-      setMicStream(null);
+      tearDownRecording();
       setStep('review');
     }
     prevPlayingRef.current = isPlaying;
-  }, [isPlaying, step]);
+  }, [isPlaying, step, tearDownRecording]);
 
   // --- Guide mode ---
   const playReference = useCallback(() => webAudio.play(), [webAudio]);
@@ -133,6 +149,7 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
+          channelCount: 1,
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
@@ -141,13 +158,23 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
       micStreamRef.current = stream;
       setMicStream(stream);
 
-      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-      chunksRef.current = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
+      const ctx = new AudioContext();
+      await ctx.audioWorklet.addModule('/recorder-worklet.js');
+
+      const source = ctx.createMediaStreamSource(stream);
+      const node = new AudioWorkletNode(ctx, 'recorder-processor', { numberOfOutputs: 0 });
+
+      recordedChunksRef.current = [];
+      recordedSampleRateRef.current = ctx.sampleRate;
+      node.port.onmessage = (e: MessageEvent<Float32Array>) => {
+        recordedChunksRef.current.push(e.data);
       };
-      mediaRecorderRef.current = recorder;
-      recorder.start(100);
+
+      source.connect(node);
+
+      audioCtxRef.current = ctx;
+      sourceNodeRef.current = source;
+      workletNodeRef.current = node;
 
       pitchSamplesRef.current = [];
       recordStartTimeRef.current = Date.now();
@@ -168,29 +195,25 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
   const pausedElapsedRef = useRef(0);
 
   const pauseRecording = useCallback(() => {
-    // Accumulate elapsed time before pausing
     pausedElapsedRef.current += (Date.now() - recordStartTimeRef.current) / 1000;
-    mediaRecorderRef.current?.pause();
+    workletNodeRef.current?.port.postMessage({ type: 'pause' });
     webAudio.pause();
     setRecordingPaused(true);
   }, [webAudio]);
 
   const resumeRecording = useCallback(() => {
     recordStartTimeRef.current = Date.now();
-    mediaRecorderRef.current?.resume();
+    workletNodeRef.current?.port.postMessage({ type: 'resume' });
     webAudio.play();
     setRecordingPaused(false);
   }, [webAudio]);
 
   const stopRecording = useCallback(() => {
-    mediaRecorderRef.current?.stop();
-    micStreamRef.current?.getTracks().forEach(t => t.stop());
-    micStreamRef.current = null;
-    setMicStream(null);
+    tearDownRecording();
     webAudio.pause();
     setRecordingPaused(false);
     setStep('review');
-  }, [webAudio]);
+  }, [webAudio, tearDownRecording]);
 
   // Pitch detection during recording (disabled when paused)
   usePitchDetection({
@@ -229,14 +252,15 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
 
   // --- Generate harmonies ---
   const generateHarmonies = useCallback(async () => {
-    if (!chunksRef.current.length) return;
+    if (!recordedChunksRef.current.length) return;
 
     setStep('generating');
     setProcessingVocal(true);
 
     try {
-      const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-      const file = new File([blob], 'recording.webm', { type: 'audio/webm' });
+      const samples = concatFloat32(recordedChunksRef.current);
+      const blob = encodeWavFloat32(samples, recordedSampleRateRef.current);
+      const file = new File([blob], 'recording.wav', { type: 'audio/wav' });
       const res = await uploadFile(file);
       setVocalJobId(res.job_id);
 
@@ -370,11 +394,8 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
 
   // Cleanup mic on unmount
   useEffect(() => {
-    return () => {
-      mediaRecorderRef.current?.stop();
-      micStreamRef.current?.getTracks().forEach(t => t.stop());
-    };
-  }, []);
+    return () => { tearDownRecording(); };
+  }, [tearDownRecording]);
 
   // Canvas mode mapping
   const canvasMode: CanvasMode =

@@ -18,7 +18,10 @@ from .melody import extract_melody, extend_notes_to_fill_gaps, f0_fill_gaps
 from .harmony import generate_harmony
 from .renderer import analyze_world, render_harmony
 from .mixer import mix_and_save
-from .utils import INTERVAL_TYPES, SUPPORTED_EXTENSIONS
+from .utils import (
+    INTERVAL_TYPES, SUPPORTED_EXTENSIONS,
+    INTERVAL_FORMANT_SHIFT, INTERVAL_DETUNE_CENTS, DETUNE_CENTS,
+)
 
 ProgressCallback = Callable[[str, str, int, int], None]
 
@@ -267,7 +270,12 @@ def run_pipeline(
         progress("generating", f"Generating {interval_type}...", step_num, total_steps)
 
         harmony_notes = generate_harmony(melody_notes, confirmed_key, interval_type)
-        harmony_audio = render_harmony(vocals_audio, sr, harmony_notes, world_analysis=world_data)
+        harmony_audio = render_harmony(
+            vocals_audio, sr, harmony_notes,
+            world_analysis=world_data,
+            formant_factor=INTERVAL_FORMANT_SHIFT.get(interval_type, 1.0),
+            detune_cents=INTERVAL_DETUNE_CENTS.get(interval_type, DETUNE_CENTS),
+        )
         harmony_path, mixed_path = mix_and_save(
             vocals_audio, harmony_audio, sr, input_path,
             harmony_volume, interval_type, output_dir,
