@@ -61,25 +61,20 @@ def render_harmony(
     elif len(raw_output) < len(vocals_audio):
         raw_output = np.pad(raw_output, (0, len(vocals_audio) - len(raw_output)))
 
-    # Gate: only keep WORLD output during note segments
-    output = np.zeros_like(vocals_audio)
-    crossfade_samples = int(CROSSFADE_MS / 1000.0 * sr)
+    # Build a smooth gate envelope from the union of note ranges. Adjacent or
+    # overlapping notes form one continuous gate (no volume duck at internal
+    # boundaries), while isolated notes still get a soft fade-in/out at the edges.
     pad_samples = int(SEGMENT_PAD_MS / 1000.0 * sr)
-
+    envelope = np.zeros(len(vocals_audio), dtype=np.float32)
     for hn in harmony_notes:
         start_sample = max(0, int(hn.start_time * sr) - pad_samples)
-        end_sample = min(len(output), int(hn.end_time * sr) + pad_samples)
-        seg_len = end_sample - start_sample
-        if seg_len < MIN_SEGMENT_SAMPLES:
-            continue
+        end_sample = min(len(envelope), int(hn.end_time * sr) + pad_samples)
+        if end_sample - start_sample >= MIN_SEGMENT_SAMPLES:
+            envelope[start_sample:end_sample] = 1.0
 
-        segment = raw_output[start_sample:end_sample].copy()
+    crossfade_samples = int(CROSSFADE_MS / 1000.0 * sr)
+    if crossfade_samples >= 2:
+        kernel = np.ones(crossfade_samples, dtype=np.float32) / crossfade_samples
+        envelope = np.convolve(envelope, kernel, mode='same').astype(np.float32)
 
-        cf = min(crossfade_samples, seg_len // 2)
-        if cf > 0:
-            segment[:cf] *= np.linspace(0, 1, cf)
-            segment[seg_len - cf:seg_len] *= np.linspace(1, 0, cf)
-
-        output[start_sample:end_sample] = segment
-
-    return output.astype(np.float32)
+    return (raw_output * envelope).astype(np.float32)

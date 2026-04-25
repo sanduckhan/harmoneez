@@ -64,6 +64,30 @@ def get_drone_midi(midi_pitch: int, key_name: str, drone_type: str) -> int:
     return target_midi
 
 
+def _merge_continuous(notes: list[HarmonyNote], max_gap: float = 0.15) -> list[HarmonyNote]:
+    """
+    Merge consecutive harmony notes that target the same pitch into a single
+    sustained note when the gap between them is small. Backing vocals hold
+    steadier when the lead fragments into multiple short notes around one pitch.
+    """
+    if len(notes) < 2:
+        return notes
+    merged = [notes[0]]
+    for hn in notes[1:]:
+        prev = merged[-1]
+        if hn.harmony_midi == prev.harmony_midi and (hn.start_time - prev.end_time) <= max_gap:
+            merged[-1] = HarmonyNote(
+                start_time=prev.start_time,
+                end_time=max(prev.end_time, hn.end_time),
+                original_midi=prev.original_midi,
+                harmony_midi=prev.harmony_midi,
+                semitone_shift=prev.semitone_shift,
+            )
+        else:
+            merged.append(hn)
+    return merged
+
+
 def generate_harmony(
     melody_notes: list[tuple[float, float, int, float]],
     key_name: str,
@@ -134,4 +158,4 @@ def generate_harmony(
             semitone_shift=semitone_shift,
         ))
 
-    return harmony_notes
+    return _merge_continuous(harmony_notes)

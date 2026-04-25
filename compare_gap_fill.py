@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Compare harmony generation with and without F0 gap-filling.
+Compare harmony generation: original vs gap-filled vs gap-filled+processed.
 
-Generates side-by-side WAV files from an existing corrected vocal recording
-so you can A/B the difference.
+Generates side-by-side WAV files from an existing corrected vocal recording.
 
 Usage:
     python compare_gap_fill.py
@@ -43,44 +42,40 @@ def main():
     vocals_audio = vocals_audio.astype(np.float32)
 
     logger.info("Loaded vocal: %.1fs at %dHz", len(vocals_audio) / sr, sr)
-
-    # Copy vocal to output for reference
     sf.write(str(OUTPUT_DIR / "00_vocal.wav"), vocals_audio, sr)
 
-    # ── Extract melody (Basic Pitch) ────────────────────────────────────────
     from harmoneez.melody import (
         extract_melody, extend_notes_to_fill_gaps, f0_fill_gaps,
     )
     from harmoneez.renderer import analyze_world, render_harmony
     from harmoneez.harmony import generate_harmony
-    from harmoneez.mixer import apply_timing_offset
+    from harmoneez.mixer import apply_timing_offset, process_harmony
     from harmoneez.utils import DEFAULT_HARMONY_VOLUME
 
+    # Extract melody
     logger.info("Extracting melody with Basic Pitch...")
-    # Write vocal to temp for Basic Pitch (it needs a file path)
     tmp_vocal = OUTPUT_DIR / "_tmp_vocal.wav"
     sf.write(str(tmp_vocal), vocals_audio, sr)
     melody_notes = extract_melody(tmp_vocal)
     logger.info("Basic Pitch: %d notes", len(melody_notes))
 
-    # ── WORLD analysis (shared) ─────────────────────────────────────────────
+    # WORLD analysis
     logger.info("Running WORLD analysis...")
     world_data = analyze_world(vocals_audio, sr)
     f0, timeaxis, sp, ap = world_data
 
-    # ── Gap-filled melody ───────────────────────────────────────────────────
+    # Gap-filled melody
     melody_filled = extend_notes_to_fill_gaps(list(melody_notes))
     melody_filled = f0_fill_gaps(melody_filled, f0, timeaxis, KEY)
     logger.info("After gap-filling: %d notes (+%d)", len(melody_filled), len(melody_filled) - len(melody_notes))
 
-    # ── Log coverage stats ──────────────────────────────────────────────────
+    # Coverage stats
     duration = len(vocals_audio) / sr
     def coverage(notes):
         return sum(e - s for s, e, _, _ in notes) / duration * 100
-
     logger.info("Coverage: Basic Pitch=%.1f%%, Gap-filled=%.1f%%", coverage(melody_notes), coverage(melody_filled))
 
-    # Save note data for inspection
+    # Save note data
     def notes_to_json(notes):
         return [
             {"start": round(float(s), 3), "end": round(float(e), 3), "midi": int(p), "vel": round(float(v), 3)}
@@ -92,61 +87,60 @@ def main():
     with open(OUTPUT_DIR / "melody_gap_filled.json", "w") as f:
         json.dump(notes_to_json(melody_filled), f, indent=2)
 
-    # ── Generate harmonies for each interval ────────────────────────────────
+    # Generate for each interval — 3 versions:
+    #   A = original (Basic Pitch only, no processing)
+    #   B = gap-filled (no processing)
+    #   C = gap-filled + EQ + reverb
     for interval in INTERVALS:
         logger.info("=== %s ===", interval)
+        safe_name = interval.replace("-", "_")
 
-        # Without gap-filling
-        harmony_notes_orig = generate_harmony(melody_notes, KEY, interval)
-        harmony_audio_orig = render_harmony(vocals_audio, sr, harmony_notes_orig, world_analysis=world_data)
-        harmony_audio_orig = apply_timing_offset(harmony_audio_orig, sr)
-        harmony_audio_orig *= DEFAULT_HARMONY_VOLUME
+        # A: Original
+        hn_orig = generate_harmony(melody_notes, KEY, interval)
+        ha_orig = render_harmony(vocals_audio, sr, hn_orig, world_analysis=world_data)
+        ha_orig = apply_timing_offset(ha_orig, sr) * DEFAULT_HARMONY_VOLUME
 
-        # With gap-filling
-        harmony_notes_filled = generate_harmony(melody_filled, KEY, interval)
-        harmony_audio_filled = render_harmony(vocals_audio, sr, harmony_notes_filled, world_analysis=world_data)
-        harmony_audio_filled = apply_timing_offset(harmony_audio_filled, sr)
-        harmony_audio_filled *= DEFAULT_HARMONY_VOLUME
+        # B: Gap-filled, no processing
+        hn_filled = generate_harmony(melody_filled, KEY, interval)
+        ha_filled = render_harmony(vocals_audio, sr, hn_filled, world_analysis=world_data)
+        ha_filled = apply_timing_offset(ha_filled, sr) * DEFAULT_HARMONY_VOLUME
+
+        # C: Gap-filled + EQ + reverb
+        hn_proc = generate_harmony(melody_filled, KEY, interval)
+        ha_proc_raw = render_harmony(vocals_audio, sr, hn_proc, world_analysis=world_data)
+        ha_proc_raw = apply_timing_offset(ha_proc_raw, sr)
+        ha_proc = process_harmony(ha_proc_raw, sr) * DEFAULT_HARMONY_VOLUME
 
         # Save harmony-only stems
-        safe_name = interval.replace("-", "_")
-        sf.write(str(OUTPUT_DIR / f"{safe_name}_A_original.wav"), harmony_audio_orig, sr)
-        sf.write(str(OUTPUT_DIR / f"{safe_name}_B_gapfilled.wav"), harmony_audio_filled, sr)
+        sf.write(str(OUTPUT_DIR / f"{safe_name}_A_original.wav"), ha_orig, sr)
+        sf.write(str(OUTPUT_DIR / f"{safe_name}_B_gapfilled.wav"), ha_filled, sr)
+        sf.write(str(OUTPUT_DIR / f"{safe_name}_C_gapfilled_processed.wav"), ha_proc, sr)
 
-        # Save mixed (vocal + harmony, mono for easy comparison)
-        mix_orig = vocals_audio + harmony_audio_orig
-        mix_filled = vocals_audio + harmony_audio_filled
-
-        # Normalize to prevent clipping
-        for mix in [mix_orig, mix_filled]:
+        # Save mixes (mono for easy comparison)
+        for label, harmony in [("A_original", ha_orig), ("B_gapfilled", ha_filled), ("C_processed", ha_proc)]:
+            mix = vocals_audio + harmony
             peak = np.max(np.abs(mix))
             if peak > 0.95:
                 mix *= 0.95 / peak
+            sf.write(str(OUTPUT_DIR / f"{safe_name}_{label}_mix.wav"), mix, sr)
 
-        sf.write(str(OUTPUT_DIR / f"{safe_name}_A_mix_original.wav"), mix_orig, sr)
-        sf.write(str(OUTPUT_DIR / f"{safe_name}_B_mix_gapfilled.wav"), mix_filled, sr)
-
-        logger.info(
-            "  %s: %d → %d harmony notes",
-            interval, len(harmony_notes_orig), len(harmony_notes_filled),
-        )
+        logger.info("  %s: A=%d notes, B/C=%d notes", interval, len(hn_orig), len(hn_filled))
 
     tmp_vocal.unlink(missing_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"Output written to: {OUTPUT_DIR}/")
+    print(f"Output: {OUTPUT_DIR}/")
     print(f"{'='*60}")
-    print(f"Files:")
-    print(f"  00_vocal.wav                  — original corrected vocal")
-    print(f"  melody_basic_pitch.json       — note events (before)")
-    print(f"  melody_gap_filled.json        — note events (after)")
+    print("A = Basic Pitch only (before)")
+    print("B = Gap-filled (no processing)")
+    print("C = Gap-filled + EQ + reverb (full treatment)")
+    print()
     for interval in INTERVALS:
         safe = interval.replace("-", "_")
-        print(f"  {safe}_A_original.wav     — harmony stem (before)")
-        print(f"  {safe}_B_gapfilled.wav    — harmony stem (after)")
-        print(f"  {safe}_A_mix_original.wav — vocal+harmony (before)")
-        print(f"  {safe}_B_mix_gapfilled.wav— vocal+harmony (after)")
-    print(f"\nCompare A vs B files to hear the difference.")
+        print(f"  {safe}_A_original_mix.wav")
+        print(f"  {safe}_B_gapfilled_mix.wav")
+        print(f"  {safe}_C_processed_mix.wav")
+        print()
 
 
 if __name__ == "__main__":

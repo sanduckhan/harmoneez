@@ -39,6 +39,7 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
   const [refDuration, setRefDuration] = useState(resumedSession?.duration ?? 0);
   const [vocalsOn, setVocalsOn] = useState(true);
   const [bandOn, setBandOn] = useState(true);
+  const [pitchCorrect, setPitchCorrect] = useState(false);
   const [seekVersion, setSeekVersion] = useState(0);
 
   // Audio — derive source from mute toggles
@@ -243,7 +244,7 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
         key: detectedKey,
         start: selStart ?? undefined,
         end: selEnd ?? undefined,
-        pitch_correct: true,
+        pitch_correct: pitchCorrect,
         harmony_volume: 0.7,
         skip_separation: true,
       });
@@ -252,7 +253,7 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
       setStep('review');
       setProcessingVocal(false);
     }
-  }, [detectedKey, selStart, selEnd]);
+  }, [detectedKey, selStart, selEnd, pitchCorrect]);
 
   // Watch vocal processing completion
   useEffect(() => {
@@ -474,6 +475,8 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
               onToggleVocals={() => setVocalsOn(v => !v)}
               onToggleBand={() => setBandOn(v => !v)}
               onGenerateHarmonies={generateHarmonies}
+              pitchCorrect={pitchCorrect}
+              onTogglePitchCorrect={() => setPitchCorrect(v => !v)}
             />
           </div>
 

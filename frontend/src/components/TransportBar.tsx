@@ -24,6 +24,8 @@ interface Props {
   onToggleVocals: () => void;
   onToggleBand: () => void;
   onGenerateHarmonies: () => void;
+  pitchCorrect: boolean;
+  onTogglePitchCorrect: () => void;
 }
 
 export function TransportBar({
@@ -32,6 +34,7 @@ export function TransportBar({
   onPlay, onPause, onSeekToStart, onSeek,
   onStartRecording, onStopRecording, onPauseRecording, onResumeRecording,
   onReRecord, onToggleVocals, onToggleBand, onGenerateHarmonies,
+  pitchCorrect, onTogglePitchCorrect,
 }: Props) {
   const scrubRef = useRef<HTMLDivElement>(null);
   const isDraggingScrub = useRef(false);
@@ -181,6 +184,22 @@ export function TransportBar({
 
         {/* Spacer */}
         <div className="flex-1" />
+
+        {/* Pitch correct toggle (review only) */}
+        {isReview && (
+          <label
+            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg cursor-pointer text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors select-none"
+            title="Apply pitch correction to recorded vocal before harmonizing"
+          >
+            <input
+              type="checkbox"
+              checked={pitchCorrect}
+              onChange={onTogglePitchCorrect}
+              className="w-3.5 h-3.5 accent-[var(--amber)] cursor-pointer"
+            />
+            Pitch correct
+          </label>
+        )}
 
         {/* Generate (review only) */}
         {isReview && (
