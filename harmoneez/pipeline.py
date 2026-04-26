@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 from .separation import separate_vocals
 from .key_detection import detect_key, detect_key_changes
 from .pitch_correction import pitch_correct_vocals
-from .melody import extract_melody, extend_notes_to_fill_gaps, f0_fill_gaps
+from .melody import extract_melody, extend_notes_to_fill_gaps, f0_fill_gaps, preprocess_for_melody
 from .harmony import generate_harmony
 from .renderer import analyze_world, render_harmony
 from .mixer import mix_and_save
@@ -201,6 +201,14 @@ def run_pipeline(
     instrumental_path = (output_dir or input_path.parent) / f"{input_path.stem}_instrumental.wav"
     sf.write(str(instrumental_path), instrumental_audio, sr)
 
+    # Save a preprocessed copy of the vocal for melody extraction only.
+    # Harmony rendering keeps using the raw vocals_audio so the lead's natural
+    # low end is preserved; Basic Pitch sees a HPF-cleaned version that gives
+    # it a fighting chance against rumble and breath noise.
+    melody_input_audio = preprocess_for_melody(vocals_audio, sr)
+    melody_input_path = tmp_dir / "vocals_for_melody.wav"
+    sf.write(str(melody_input_path), melody_input_audio, sr)
+
     # Step 3: Pitch correction
     corrected_path = None
     pitch_data_path = None
@@ -208,7 +216,7 @@ def run_pipeline(
     raw_melody = None
     if pitch_correct:
         progress("pitch_correcting", "Correcting vocal pitch...", 3, total_steps)
-        raw_melody = extract_melody(vocals_path)
+        raw_melody = extract_melody(melody_input_path)
         vocals_audio, corrected_count, total_voiced, pitch_frames, world_data = pitch_correct_vocals(
             vocals_audio, sr, raw_melody, confirmed_key
         )
@@ -235,7 +243,7 @@ def run_pipeline(
             float(np.sqrt(np.mean(vocals_audio ** 2))),
             float(np.max(np.abs(vocals_audio))),
         )
-        melody_notes = extract_melody(vocals_path)
+        melody_notes = extract_melody(melody_input_path)
     progress("extracting_melody", f"Found {len(melody_notes)} notes", 4, total_steps)
 
     # Save melody data as JSON for the pitch guide

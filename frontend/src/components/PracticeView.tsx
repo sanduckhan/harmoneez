@@ -76,6 +76,8 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
   const audioCtxRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const monitorGainRef = useRef<GainNode | null>(null);
+  const [monitorOn, setMonitorOn] = useState(false);
   const recordedChunksRef = useRef<Float32Array[]>([]);
   const recordedSampleRateRef = useRef<number>(44100);
   const pitchSamplesRef = useRef<PitchSample[]>([]);
@@ -115,38 +117,11 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
   // Use ref for mic stream to avoid stale closures
   const micStreamRef = useRef<MediaStream | null>(null);
 
-  // Tear down the recording graph (worklet, source, context, mic tracks).
-  const tearDownRecording = useCallback(() => {
-    try { workletNodeRef.current?.disconnect(); } catch {}
-    try { sourceNodeRef.current?.disconnect(); } catch {}
-    workletNodeRef.current = null;
-    sourceNodeRef.current = null;
-    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
-      audioCtxRef.current.close().catch(() => {});
-    }
-    audioCtxRef.current = null;
-    micStreamRef.current?.getTracks().forEach(t => t.stop());
-    micStreamRef.current = null;
-    setMicStream(null);
-  }, []);
-
-  // Watch for playback end during recording
-  const prevPlayingRef = useRef(false);
-  useEffect(() => {
-    if (prevPlayingRef.current && !isPlaying && step === 'recording') {
-      setRecordingPaused(false);
-      tearDownRecording();
-      setStep('review');
-    }
-    prevPlayingRef.current = isPlaying;
-  }, [isPlaying, step, tearDownRecording]);
-
-  // --- Guide mode ---
-  const playReference = useCallback(() => webAudio.play(), [webAudio]);
-  const pauseReference = useCallback(() => webAudio.pause(), [webAudio]);
-
-  // --- Recording ---
-  const startRecording = useCallback(async () => {
+  // Acquire mic + context + source + monitor gain. Idempotent — safe to call
+  // multiple times. Decoupled from recording so monitoring can run in 'guide'
+  // step (let the user check their headphones before pressing record).
+  const ensureAudioGraph = useCallback(async (): Promise<boolean> => {
+    if (audioCtxRef.current && sourceNodeRef.current) return true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -156,41 +131,107 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
           autoGainControl: false,
         },
       });
-      micStreamRef.current = stream;
-      setMicStream(stream);
-
       const ctx = new AudioContext();
       await ctx.audioWorklet.addModule('/recorder-worklet.js');
-
       const source = ctx.createMediaStreamSource(stream);
-      const node = new AudioWorkletNode(ctx, 'recorder-processor', { numberOfOutputs: 0 });
+      const monitor = ctx.createGain();
+      monitor.gain.value = monitorOn ? 1.0 : 0;
+      source.connect(monitor);
+      monitor.connect(ctx.destination);
 
-      recordedChunksRef.current = [];
-      recordedSampleRateRef.current = ctx.sampleRate;
-      node.port.onmessage = (e: MessageEvent<Float32Array>) => {
-        recordedChunksRef.current.push(e.data);
-      };
-
-      source.connect(node);
-
+      micStreamRef.current = stream;
+      setMicStream(stream);
       audioCtxRef.current = ctx;
       sourceNodeRef.current = source;
-      workletNodeRef.current = node;
-
-      pitchSamplesRef.current = [];
-      recordStartTimeRef.current = Date.now();
-      pausedElapsedRef.current = 0;
-      recordAudioOffsetRef.current = webAudio.getTime();
-      setRecordingPaused(false);
-
-      // Start reference playback if not already playing
-      if (!webAudio.playing) webAudio.play();
-
-      setStep('recording');
+      monitorGainRef.current = monitor;
+      return true;
     } catch {
       alert('Microphone access denied. Please allow mic access in your browser settings.');
+      return false;
     }
-  }, [webAudio]);
+  }, [monitorOn]);
+
+  // Release mic + context. Caller must ensure nothing is actively using them.
+  const releaseAudioGraph = useCallback(() => {
+    try { workletNodeRef.current?.disconnect(); } catch {}
+    try { sourceNodeRef.current?.disconnect(); } catch {}
+    try { monitorGainRef.current?.disconnect(); } catch {}
+    workletNodeRef.current = null;
+    sourceNodeRef.current = null;
+    monitorGainRef.current = null;
+    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+      audioCtxRef.current.close().catch(() => {});
+    }
+    audioCtxRef.current = null;
+    micStreamRef.current?.getTracks().forEach(t => t.stop());
+    micStreamRef.current = null;
+    setMicStream(null);
+  }, []);
+
+  // Watch for playback end during recording — only tear down on REAL end of
+  // track. URL changes (vocals/band toggles) cause a brief isPlaying = false
+  // during reload; ignore those to keep recording alive.
+  const prevPlayingRef = useRef(false);
+  useEffect(() => {
+    if (prevPlayingRef.current && !isPlaying && step === 'recording') {
+      const dur = webAudio.duration;
+      const atEnd = dur > 0 && webAudio.getTime() >= dur - 0.5;
+      if (atEnd) {
+        try { workletNodeRef.current?.disconnect(); } catch {}
+        workletNodeRef.current = null;
+        setRecordingPaused(false);
+        setStep('review');
+        if (!monitorOn) releaseAudioGraph();
+      }
+    }
+    prevPlayingRef.current = isPlaying;
+  }, [isPlaying, step, webAudio, monitorOn, releaseAudioGraph]);
+
+  // --- Guide mode ---
+  const playReference = useCallback(() => webAudio.play(), [webAudio]);
+  const pauseReference = useCallback(() => webAudio.pause(), [webAudio]);
+
+  // --- Monitor toggle (works in 'guide' before recording, and during it) ---
+  const toggleMonitor = useCallback(async () => {
+    const next = !monitorOn;
+    setMonitorOn(next);
+    if (next) {
+      const ok = await ensureAudioGraph();
+      if (ok && monitorGainRef.current) monitorGainRef.current.gain.value = 1.0;
+    } else {
+      if (monitorGainRef.current) monitorGainRef.current.gain.value = 0;
+      // If nothing else needs the mic, release it.
+      if (step !== 'recording' && !workletNodeRef.current) {
+        releaseAudioGraph();
+      }
+    }
+  }, [monitorOn, step, ensureAudioGraph, releaseAudioGraph]);
+
+  // --- Recording ---
+  const startRecording = useCallback(async () => {
+    const ok = await ensureAudioGraph();
+    if (!ok) return;
+    const ctx = audioCtxRef.current!;
+    const source = sourceNodeRef.current!;
+
+    const node = new AudioWorkletNode(ctx, 'recorder-processor', { numberOfOutputs: 0 });
+    recordedChunksRef.current = [];
+    recordedSampleRateRef.current = ctx.sampleRate;
+    node.port.onmessage = (e: MessageEvent<Float32Array>) => {
+      recordedChunksRef.current.push(e.data);
+    };
+    source.connect(node);
+    workletNodeRef.current = node;
+
+    pitchSamplesRef.current = [];
+    recordStartTimeRef.current = Date.now();
+    pausedElapsedRef.current = 0;
+    recordAudioOffsetRef.current = webAudio.getTime();
+    setRecordingPaused(false);
+
+    if (!webAudio.playing) webAudio.play();
+    setStep('recording');
+  }, [ensureAudioGraph, webAudio]);
 
   const [recordingPaused, setRecordingPaused] = useState(false);
   const pausedElapsedRef = useRef(0);
@@ -210,11 +251,14 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
   }, [webAudio]);
 
   const stopRecording = useCallback(() => {
-    tearDownRecording();
+    try { workletNodeRef.current?.disconnect(); } catch {}
+    workletNodeRef.current = null;
     webAudio.pause();
     setRecordingPaused(false);
     setStep('review');
-  }, [webAudio, tearDownRecording]);
+    // Keep the audio graph alive if monitoring is still on.
+    if (!monitorOn) releaseAudioGraph();
+  }, [webAudio, monitorOn, releaseAudioGraph]);
 
   // Pitch detection during recording (disabled when paused)
   usePitchDetection({
@@ -225,6 +269,7 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
       setRecordingElapsed(sample.time);
     },
     getElapsedTime: () => recordAudioOffsetRef.current + pausedElapsedRef.current + (Date.now() - recordStartTimeRef.current) / 1000,
+    getExpectedMidi: (time) => findActiveNote(melodyNotes, time)?.midi_pitch ?? null,
   });
 
   // --- Review ---
@@ -310,20 +355,37 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
     }
   }, [vocalProgress]);
 
-  // Accuracy score — computed once on entering review mode
+  // Accuracy score — graded scoring matching karaoke-game conventions
+  // (SingStar / Karaoke Revolution / Yousician). Full credit within a quarter-
+  // tone, linear partial credit out to a whole tone, zero beyond. Attack
+  // frames (first 100 ms of each note) are skipped so onset wobble doesn't
+  // penalize a take that's actually well-sung.
   const [accuracyScore, setAccuracyScore] = useState(0);
   useEffect(() => {
     if (step !== 'review') return;
     const samples = pitchSamplesRef.current;
     if (!samples || samples.length === 0) { setAccuracyScore(0); return; }
-    const voiced = samples.filter(s => s.midi !== null);
-    if (voiced.length === 0) { setAccuracyScore(0); return; }
-    let inTuneCount = 0;
-    for (const s of voiced) {
+
+    const noteCredit = (detected: number, target: number): number => {
+      const cents = Math.abs(detected - target) * 100;
+      if (cents <= 50) return 1.0;                    // in tune
+      if (cents <= 100) return 1.0 - (cents - 50) / 100;   // 1.0 → 0.5
+      if (cents <= 200) return 0.5 - (cents - 100) / 200;  // 0.5 → 0.0
+      return 0;
+    };
+
+    let totalCredit = 0;
+    let totalScored = 0;
+    for (const s of samples) {
+      if (s.midi === null) continue;
       const note = findActiveNote(melodyNotes, s.time);
-      if (note && Math.abs(s.midi! - note.midi_pitch) * 100 < 20) inTuneCount++;
+      if (!note) continue;
+      if (s.time - note.start_sec < 0.1) continue; // skip attack
+      totalCredit += noteCredit(s.midi, note.midi_pitch);
+      totalScored++;
     }
-    setAccuracyScore(Math.round((inTuneCount / voiced.length) * 100));
+    if (totalScored === 0) { setAccuracyScore(0); return; }
+    setAccuracyScore(Math.round((totalCredit / totalScored) * 100));
   }, [step, melodyNotes]);
 
   // Clear selection helper
@@ -396,8 +458,8 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
 
   // Cleanup mic on unmount
   useEffect(() => {
-    return () => { tearDownRecording(); };
-  }, [tearDownRecording]);
+    return () => { releaseAudioGraph(); };
+  }, [releaseAudioGraph]);
 
   // Canvas mode mapping
   const canvasMode: CanvasMode =
@@ -502,6 +564,8 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
               onTogglePitchCorrect={() => setPitchCorrect(v => !v)}
               harmonyInTune={harmonyInTune}
               onToggleHarmonyInTune={() => setHarmonyInTune(v => !v)}
+              monitorOn={monitorOn}
+              onToggleMonitor={toggleMonitor}
             />
           </div>
 

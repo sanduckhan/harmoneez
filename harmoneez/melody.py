@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+from scipy.signal import butter, sosfilt
 
 from .utils import VELOCITY_THRESHOLD, build_scale_pitch_classes, is_in_scale
 
@@ -96,6 +97,22 @@ def extract_melody(vocals_path: Path) -> list[tuple[float, float, int, float]]:
         raise ValueError("No melody notes detected in the vocal track.")
 
     return notes
+
+
+def preprocess_for_melody(audio: np.ndarray, sr: int) -> np.ndarray:
+    """
+    Light cleanup before Basic Pitch sees the vocal: 60 Hz Butterworth HPF
+    removes rumble, room handling noise, and DC offset that otherwise pollute
+    pitch detection — especially on raw mic recordings (skip_separation path).
+
+    NOTE: only used for melody extraction. Harmony rendering still operates on
+    the original unprocessed audio so the lead's natural low end is preserved.
+    """
+    nyq = sr / 2.0
+    if 60.0 >= nyq:
+        return audio
+    sos = butter(4, 60.0 / nyq, btype='high', output='sos')
+    return sosfilt(sos, audio).astype(np.float32)
 
 
 def correct_octave_outliers(

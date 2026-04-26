@@ -28,6 +28,8 @@ interface Props {
   onTogglePitchCorrect: () => void;
   harmonyInTune: boolean;
   onToggleHarmonyInTune: () => void;
+  monitorOn: boolean;
+  onToggleMonitor: () => void;
 }
 
 export function TransportBar({
@@ -38,6 +40,7 @@ export function TransportBar({
   onReRecord, onToggleVocals, onToggleBand, onGenerateHarmonies,
   pitchCorrect, onTogglePitchCorrect,
   harmonyInTune, onToggleHarmonyInTune,
+  monitorOn, onToggleMonitor,
 }: Props) {
   const scrubRef = useRef<HTMLDivElement>(null);
   const isDraggingScrub = useRef(false);
@@ -177,6 +180,24 @@ export function TransportBar({
             <div className="w-3.5 h-3.5 rounded-full bg-current" />
           )}
         </button>
+
+        {/* Monitor toggle — available before AND during recording so users
+            can confirm their headphones work before pressing record */}
+        {(step === 'guide' || isRecording) && (
+          <button
+            onClick={onToggleMonitor}
+            className={`w-9 h-9 flex items-center justify-center rounded-lg border transition-all ${
+              monitorOn
+                ? 'bg-[var(--amber)]/15 border-[var(--amber)]/40 text-[var(--amber)]'
+                : 'bg-[var(--bg-surface)] border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+            }`}
+            title={monitorOn ? 'Stop monitoring (use headphones to avoid feedback)' : 'Hear yourself (use headphones)'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H4a1 1 0 0 1-1-1v-6a9 9 0 0 1 18 0v6a1 1 0 0 1-1 1h-2a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+            </svg>
+          </button>
+        )}
 
         {/* Time */}
         <div className="flex items-center gap-1 font-mono text-xs tabular-nums min-w-[100px]">

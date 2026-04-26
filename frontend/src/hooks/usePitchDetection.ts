@@ -8,6 +8,11 @@ interface UsePitchDetectionOptions {
   clarityThreshold?: number;
   onPitchDetected: (sample: PitchSample) => void;
   getElapsedTime: () => number;
+  // If provided, used as a contextual octave anchor: pitchy occasionally
+  // locks onto a harmonic an octave above (or below) the fundamental — when
+  // we know what the song's lead pitch is at this moment, we can snap the
+  // detected pitch into the expected octave.
+  getExpectedMidi?: (time: number) => number | null;
 }
 
 // Maximum jump in semitones between consecutive frames before we reject as octave error
@@ -21,6 +26,7 @@ export function usePitchDetection({
   clarityThreshold = 0.8,
   onPitchDetected,
   getElapsedTime,
+  getExpectedMidi,
 }: UsePitchDetectionOptions) {
   const onPitchRef = useRef(onPitchDetected);
   onPitchRef.current = onPitchDetected;
@@ -28,6 +34,8 @@ export function usePitchDetection({
   getTimeRef.current = getElapsedTime;
   const thresholdRef = useRef(clarityThreshold);
   thresholdRef.current = clarityThreshold;
+  const getExpectedRef = useRef(getExpectedMidi);
+  getExpectedRef.current = getExpectedMidi;
 
   useEffect(() => {
     if (!stream || !enabled) return;
@@ -52,7 +60,18 @@ export function usePitchDetection({
       const time = getTimeRef.current();
 
       if (clarity >= thresholdRef.current && pitch > 50 && pitch < 1500) {
-        const midi = 12 * Math.log2(pitch / 440) + 69;
+        let midi = 12 * Math.log2(pitch / 440) + 69;
+        let snappedHz = pitch;
+
+        // Octave snap: pull detected pitch into the nearest octave of the
+        // song's expected lead pitch. Pitchy can lock onto a 2× harmonic at
+        // the very start of a phrase (no jump for the jump-detector to catch);
+        // this fixes that contextually using what the song "should be" doing.
+        const expected = getExpectedRef.current?.(time) ?? null;
+        if (expected !== null) {
+          while (midi - expected > 6) { midi -= 12; snappedHz /= 2; }
+          while (expected - midi > 6) { midi += 12; snappedHz *= 2; }
+        }
 
         // Filter octave errors: reject sudden large jumps unless sustained
         let accepted = true;
@@ -87,7 +106,7 @@ export function usePitchDetection({
         }
 
         if (accepted) {
-          onPitchRef.current({ time, hz: pitch, midi, clarity });
+          onPitchRef.current({ time, hz: snappedHz, midi, clarity });
         } else {
           // Emit null for rejected frames (keeps timeline continuous)
           onPitchRef.current({ time, hz: null, midi: null, clarity });
