@@ -42,6 +42,7 @@ def run_pipeline(
     tmp_dir: Path | None = None,
     on_progress: ProgressCallback | None = None,
     skip_separation: bool = False,
+    harmony_in_tune: bool = False,
 ) -> dict:
     """
     Run the full harmonize pipeline.
@@ -275,6 +276,7 @@ def run_pipeline(
             world_analysis=world_data,
             formant_factor=INTERVAL_FORMANT_SHIFT.get(interval_type, 1.0),
             detune_cents=INTERVAL_DETUNE_CENTS.get(interval_type, DETUNE_CENTS),
+            in_tune=harmony_in_tune,
         )
         harmony_path, mixed_path = mix_and_save(
             vocals_audio, harmony_audio, sr, input_path,

@@ -52,7 +52,7 @@ TIMING_OFFSET_MS = 15
 HARMONY_PAN = 0.3
 DETUNE_CENTS = 8
 DEFAULT_HARMONY_VOLUME = 0.7
-VELOCITY_THRESHOLD = 0.45
+VELOCITY_THRESHOLD = 0.35
 PORTAMENTO_MS = 30  # ramp inter-note pitch transitions instead of stepping
 
 # Per-interval formant scale: real backup singers at different pitches have

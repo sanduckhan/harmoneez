@@ -203,6 +203,7 @@ class ProcessRequest(BaseModel):
     intervals: str = "all"
     harmony_volume: float = 0.7
     skip_separation: bool = False
+    harmony_in_tune: bool = False
 
 
 class DownloadRequest(BaseModel):
@@ -444,6 +445,7 @@ async def _run_pipeline(job: Job):
             output_dir=job.tmp_dir,
             on_progress=on_progress,
             skip_separation=params.get("skip_separation", False),
+            harmony_in_tune=params.get("harmony_in_tune", False),
         )
 
         # Convert file paths to relative URLs

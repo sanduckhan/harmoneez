@@ -137,28 +137,35 @@ def generate_harmony(
 
         else:
             ideal = diatonic_interval(midi_pitch, scale_pcs, degrees)
+            safe_min, safe_max = INTERVAL_SAFE_RANGE[interval_type]
 
             # Voice leading: prefer holding the previous harmony pitch when it's
-            # still close to the ideal target AND forms a consonant interval
-            # with the current melody note. This keeps backing vocals on common
-            # tones instead of mechanically jumping with every melody move.
+            # still close to the ideal AND in scale AND inside the safe range
+            # for this melody note. The safe-range check is critical — without
+            # it, holding a "previous" pitch that's now too far from the lead
+            # gets clamped chromatically and lands off-key.
+            prev_shift = (prev_harmony_midi - midi_pitch) if prev_harmony_midi is not None else None
             if (
                 prev_harmony_midi is not None
                 and abs(prev_harmony_midi - ideal) <= 2
                 and is_in_scale(prev_harmony_midi, scale_pcs)
-                and 3 <= abs(prev_harmony_midi - midi_pitch) <= 12
+                and prev_shift is not None
+                and safe_min <= prev_shift <= safe_max
             ):
                 harmony_midi = prev_harmony_midi
             else:
                 harmony_midi = ideal
 
             shift = harmony_midi - midi_pitch
-            safe_min, safe_max = INTERVAL_SAFE_RANGE[interval_type]
             if shift < safe_min or shift > safe_max:
                 if abs(shift - safe_min) <= abs(shift - safe_max):
                     harmony_midi = midi_pitch + safe_min
                 else:
                     harmony_midi = midi_pitch + safe_max
+                # If chromatic clamping pushed us off-scale, fall back to the
+                # diatonic ideal so we never emit a non-scale tone here.
+                if not is_in_scale(harmony_midi, scale_pcs):
+                    harmony_midi = ideal
 
             prev_harmony_midi = harmony_midi
 

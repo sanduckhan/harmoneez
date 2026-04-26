@@ -26,6 +26,8 @@ interface Props {
   onGenerateHarmonies: () => void;
   pitchCorrect: boolean;
   onTogglePitchCorrect: () => void;
+  harmonyInTune: boolean;
+  onToggleHarmonyInTune: () => void;
 }
 
 export function TransportBar({
@@ -35,6 +37,7 @@ export function TransportBar({
   onStartRecording, onStopRecording, onPauseRecording, onResumeRecording,
   onReRecord, onToggleVocals, onToggleBand, onGenerateHarmonies,
   pitchCorrect, onTogglePitchCorrect,
+  harmonyInTune, onToggleHarmonyInTune,
 }: Props) {
   const scrubRef = useRef<HTMLDivElement>(null);
   const isDraggingScrub = useRef(false);
@@ -198,6 +201,22 @@ export function TransportBar({
               className="w-3.5 h-3.5 accent-[var(--amber)] cursor-pointer"
             />
             Pitch correct
+          </label>
+        )}
+
+        {/* In-tune harmony toggle (review only) */}
+        {isReview && (
+          <label
+            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg cursor-pointer text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors select-none"
+            title="Lock harmony to scale even if your lead drifts in pitch"
+          >
+            <input
+              type="checkbox"
+              checked={harmonyInTune}
+              onChange={onToggleHarmonyInTune}
+              className="w-3.5 h-3.5 accent-[var(--amber)] cursor-pointer"
+            />
+            In-tune harmony
           </label>
         )}
 

@@ -24,6 +24,7 @@ export async function startProcessing(jobId: string, params: {
   intervals?: string;
   harmony_volume?: number;
   skip_separation?: boolean;
+  harmony_in_tune?: boolean;
 }): Promise<void> {
   const res = await fetch(`${BASE}/api/process/${jobId}`, {
     method: 'POST',

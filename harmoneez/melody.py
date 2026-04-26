@@ -90,11 +90,45 @@ def extract_melody(vocals_path: Path) -> list[tuple[float, float, int, float]]:
 
     notes.sort(key=lambda n: n[0])
     notes = reduce_to_monophonic(notes)
+    notes = correct_octave_outliers(notes)
 
     if not notes:
         raise ValueError("No melody notes detected in the vocal track.")
 
     return notes
+
+
+def correct_octave_outliers(
+    notes: list[tuple[float, float, int, float]],
+    window_sec: float = 4.0,
+    max_dev_semitones: int = 7,
+) -> list[tuple[float, float, int, float]]:
+    """
+    Snap notes that are more than ~7 semitones from their local-median pitch
+    back into range by transposing in octaves. Basic Pitch occasionally flips
+    a note an octave off; this pulls it back without dropping it.
+    """
+    if len(notes) < 5:
+        return notes
+    centers = [(s + e) / 2 for s, e, _, _ in notes]
+    pitches = [p for _, _, p, _ in notes]
+    out = []
+    for i, (s, e, p, v) in enumerate(notes):
+        c = centers[i]
+        local = [
+            pitches[j] for j in range(len(notes))
+            if j != i and abs(centers[j] - c) <= window_sec / 2
+        ]
+        if not local:
+            out.append((s, e, p, v))
+            continue
+        median = int(statistics.median(local))
+        while p - median > max_dev_semitones:
+            p -= 12
+        while median - p > max_dev_semitones:
+            p += 12
+        out.append((s, e, p, v))
+    return out
 
 
 def reduce_to_monophonic(

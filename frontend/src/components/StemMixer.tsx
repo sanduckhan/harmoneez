@@ -26,11 +26,18 @@ export function StemMixer({ stems }: Props) {
   const scrubRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<number>(0);
 
-  // Initialize stem states
+  // Initialize stem states. Default: lead + 3rd-above audible; everything
+  // else muted so users opt into harmonies one at a time instead of being
+  // hit with the full stack at once.
   useEffect(() => {
     const initial: Record<string, StemState> = {};
+    const audibleByDefault = new Set(['vocal', '3rd-above']);
     for (const s of stems) {
-      initial[s.id] = { muted: false, solo: false, volume: 0.8 };
+      initial[s.id] = {
+        muted: !audibleByDefault.has(s.id),
+        solo: false,
+        volume: 0.8,
+      };
     }
     if (stems.length > 0) initial[stems[0].id].volume = 1.0;
     setStemStates(initial);
