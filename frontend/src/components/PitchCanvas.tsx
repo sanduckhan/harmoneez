@@ -339,14 +339,22 @@ export function PitchCanvas({
         if (prev.midi === null || curr.midi === null) continue;
         if (curr.time - prev.time > 0.15) continue;
 
+        // Dashed where sung in another octave (the trail is snapped onto the melody).
+        // Dash phase follows x so the pattern runs continuously across segments.
+        const x0 = timeToX(prev.time);
+        ctx.setLineDash(curr.octave ? [6, 6] : []);
+        ctx.lineDashOffset = x0;
+
         ctx.beginPath();
         ctx.strokeStyle = deviationColor(melodyNotes, curr.time, curr.midi, txp);
         ctx.lineWidth = 3;
-        ctx.lineCap = 'round';
-        ctx.moveTo(timeToX(prev.time), midiToY(prev.midi));
+        ctx.lineCap = curr.octave ? 'butt' : 'round';
+        ctx.moveTo(x0, midiToY(prev.midi));
         ctx.lineTo(timeToX(curr.time), midiToY(curr.midi));
         ctx.stroke();
       }
+      ctx.setLineDash([]);
+      ctx.lineDashOffset = 0;
     }
 
     // 7. Now-marker — at anchor when in follow mode, at true position otherwise

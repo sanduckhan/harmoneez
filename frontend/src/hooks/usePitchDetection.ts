@@ -19,6 +19,21 @@ interface UsePitchDetectionOptions {
 const MAX_JUMP_SEMITONES = 7;
 // Number of consecutive frames a new pitch must hold to be accepted after a jump
 const CONFIRM_FRAMES = 3;
+// Voiced frames the sung octave is voted over (~0.75s at 60fps) — outvotes
+// pitchy's brief harmonic locks at phrase starts
+const OCTAVE_WINDOW = 45;
+
+function mostCommon(values: number[]): number {
+  const counts = new Map<number, number>();
+  let best = values[0];
+  let bestCount = 0;
+  for (const v of values) {
+    const c = (counts.get(v) ?? 0) + 1;
+    counts.set(v, c);
+    if (c > bestCount) { best = v; bestCount = c; }
+  }
+  return best;
+}
 
 export function usePitchDetection({
   stream,
@@ -52,6 +67,7 @@ export function usePitchDetection({
     let lastMidi: number | null = null;
     let jumpCandidate: number | null = null;
     let jumpCount = 0;
+    const recentOctaves: number[] = [];
 
     function detect() {
       analyser.getFloatTimeDomainData(buffer);
@@ -67,10 +83,17 @@ export function usePitchDetection({
         // song's expected lead pitch. Pitchy can lock onto a 2× harmonic at
         // the very start of a phrase (no jump for the jump-detector to catch);
         // this fixes that contextually using what the song "should be" doing.
+        // The snap keeps the line and score octave-agnostic; how far it moved
+        // is the octave actually sung, reported separately.
         const expected = getExpectedRef.current?.(time) ?? null;
+        let octave: number | null = null;
         if (expected !== null) {
-          while (midi - expected > 6) { midi -= 12; snappedHz /= 2; }
-          while (expected - midi > 6) { midi += 12; snappedHz *= 2; }
+          let shift = 0;
+          while (midi - expected > 6) { midi -= 12; snappedHz /= 2; shift++; }
+          while (expected - midi > 6) { midi += 12; snappedHz *= 2; shift--; }
+          recentOctaves.push(shift);
+          if (recentOctaves.length > OCTAVE_WINDOW) recentOctaves.shift();
+          octave = mostCommon(recentOctaves);
         }
 
         // Filter octave errors: reject sudden large jumps unless sustained
@@ -106,16 +129,16 @@ export function usePitchDetection({
         }
 
         if (accepted) {
-          onPitchRef.current({ time, hz: snappedHz, midi, clarity });
+          onPitchRef.current({ time, hz: snappedHz, midi, clarity, octave });
         } else {
           // Emit null for rejected frames (keeps timeline continuous)
-          onPitchRef.current({ time, hz: null, midi: null, clarity });
+          onPitchRef.current({ time, hz: null, midi: null, clarity, octave: null });
         }
       } else {
         lastMidi = null;
         jumpCandidate = null;
         jumpCount = 0;
-        onPitchRef.current({ time, hz: null, midi: null, clarity });
+        onPitchRef.current({ time, hz: null, midi: null, clarity, octave: null });
       }
 
       animFrame = requestAnimationFrame(detect);

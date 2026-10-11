@@ -1,4 +1,4 @@
-import type { UploadResult, KeyDetectionResult, PipelineResult, MelodyNote, RecordingInfo } from './types';
+import type { UploadResult, KeyDetectionResult, PipelineResult, MelodyNote, RecordingInfo, VocalRange } from './types';
 
 const BASE = '';
 
@@ -13,6 +13,13 @@ export async function uploadFile(file: File): Promise<UploadResult> {
 export async function detectKey(jobId: string): Promise<KeyDetectionResult> {
   const res = await fetch(`${BASE}/api/detect-key/${jobId}`);
   if (!res.ok) throw new Error(`Key detection failed: ${res.statusText}`);
+  return res.json();
+}
+
+// Isolates vocals on first call (~30s for a full song). null = no singing found.
+export async function getVocalRange(jobId: string): Promise<VocalRange | null> {
+  const res = await fetch(`${BASE}/api/vocal-range/${jobId}`);
+  if (!res.ok) throw new Error(`Vocal range failed: ${res.statusText}`);
   return res.json();
 }
 

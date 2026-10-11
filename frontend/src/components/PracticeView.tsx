@@ -20,6 +20,13 @@ interface ResumedSession {
   duration: number;
 }
 
+// Sung octave relative to the melody: 0 → "right octave", -1 → "1 octave below"
+function describeOctave(octave: number): string {
+  if (octave === 0) return 'right octave';
+  const n = Math.abs(octave);
+  return `${n} octave${n > 1 ? 's' : ''} ${octave < 0 ? 'below' : 'above'}`;
+}
+
 interface Props {
   onBack: () => void;
   onChangeKey?: () => void;
@@ -82,6 +89,7 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
   const recordedSampleRateRef = useRef<number>(44100);
   const pitchSamplesRef = useRef<PitchSample[]>([]);
   const [recordingElapsed, setRecordingElapsed] = useState(0);
+  const [liveOctave, setLiveOctave] = useState<number | null>(null);
   const recordStartTimeRef = useRef(0);
   const recordAudioOffsetRef = useRef(0);
 
@@ -224,6 +232,7 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
     workletNodeRef.current = node;
 
     pitchSamplesRef.current = [];
+    setLiveOctave(null);
     recordStartTimeRef.current = Date.now();
     pausedElapsedRef.current = 0;
     recordAudioOffsetRef.current = webAudio.getTime();
@@ -267,6 +276,8 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
     onPitchDetected: (sample) => {
       pitchSamplesRef.current.push(sample);
       setRecordingElapsed(sample.time);
+      // Hold the last known octave through rests
+      if (sample.octave !== null) setLiveOctave(sample.octave);
     },
     getElapsedTime: () => recordAudioOffsetRef.current + pausedElapsedRef.current + (Date.now() - recordStartTimeRef.current) / 1000,
     getExpectedMidi: (time) => findActiveNote(melodyNotes, time)?.midi_pitch ?? null,
@@ -361,10 +372,12 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
   // frames (first 100 ms of each note) are skipped so onset wobble doesn't
   // penalize a take that's actually well-sung.
   const [accuracyScore, setAccuracyScore] = useState(0);
+  // Octave sung for most of the take, and the share of scored frames in it
+  const [takeOctave, setTakeOctave] = useState<{ octave: number; share: number } | null>(null);
   useEffect(() => {
     if (step !== 'review') return;
     const samples = pitchSamplesRef.current;
-    if (!samples || samples.length === 0) { setAccuracyScore(0); return; }
+    if (!samples || samples.length === 0) { setAccuracyScore(0); setTakeOctave(null); return; }
 
     const noteCredit = (detected: number, target: number): number => {
       const cents = Math.abs(detected - target) * 100;
@@ -376,6 +389,7 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
 
     let totalCredit = 0;
     let totalScored = 0;
+    const octaveCounts = new Map<number, number>();
     for (const s of samples) {
       if (s.midi === null) continue;
       const note = findActiveNote(melodyNotes, s.time);
@@ -383,7 +397,17 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
       if (s.time - note.start_sec < 0.1) continue; // skip attack
       totalCredit += noteCredit(s.midi, note.midi_pitch);
       totalScored++;
+      if (s.octave !== null) octaveCounts.set(s.octave, (octaveCounts.get(s.octave) ?? 0) + 1);
     }
+
+    let octaveTotal = 0;
+    for (const count of octaveCounts.values()) octaveTotal += count;
+    let dominant: { octave: number; share: number } | null = null;
+    for (const [octave, count] of octaveCounts) {
+      if (!dominant || count / octaveTotal > dominant.share) dominant = { octave, share: count / octaveTotal };
+    }
+    setTakeOctave(dominant);
+
     if (totalScored === 0) { setAccuracyScore(0); return; }
     setAccuracyScore(Math.round((totalCredit / totalScored) * 100));
   }, [step, melodyNotes]);
@@ -509,12 +533,27 @@ export function PracticeView({ onBack, onChangeKey, onViewHarmonies, resumedSess
                 {step === 'recording' ? 'Recording' : step === 'review' ? 'Review' : 'Melody Guide'}
               </span>
               {step === 'recording' && (
-                <span className="text-xs font-mono text-[var(--red)] ml-auto tabular-nums">
-                  {formatTime(recordingElapsed)}
-                </span>
+                <div className="ml-auto flex items-center gap-4">
+                  {liveOctave !== null && (
+                    <span className={`text-[10px] font-mono uppercase tracking-wider ${liveOctave === 0 ? 'text-[var(--teal)]' : 'text-[var(--amber)]'}`}>
+                      {liveOctave === 0 ? '✓' : liveOctave < 0 ? '▼' : '▲'} {describeOctave(liveOctave)}
+                    </span>
+                  )}
+                  <span className="text-xs font-mono text-[var(--red)] tabular-nums">
+                    {formatTime(recordingElapsed)}
+                  </span>
+                </div>
               )}
               {step === 'review' && (
                 <span className="text-xs font-mono text-[var(--text-muted)] ml-auto">
+                  {takeOctave && (
+                    <>
+                      <span className={takeOctave.octave === 0 ? 'text-[var(--teal)]' : 'text-[var(--amber)]'}>
+                        {takeOctave.share < 0.9 && 'mostly '}{describeOctave(takeOctave.octave)}
+                      </span>
+                      {' · '}
+                    </>
+                  )}
                   Accuracy: <span className={`${accuracyScore >= 70 ? 'text-[var(--teal)]' : accuracyScore >= 50 ? 'text-[var(--amber)]' : 'text-[var(--red)]'}`}>{accuracyScore}%</span>
                 </span>
               )}

@@ -61,6 +61,7 @@ class Job:
     step_num: int = 0
     total_steps: int = 0
     websockets: list = field(default_factory=list)
+    analysis: Optional[asyncio.Task] = None  # in-flight/finished analyze_vocals run
 
 
 jobs: dict[str, Job] = {}
@@ -142,6 +143,9 @@ def restore_session(session_id: str) -> Job | None:
         created_at=meta.get("created_at", time.time()),
         result=meta.get("result"),
     )
+    # Resume is called on every song page visit — keep a running analysis attached
+    if previous := jobs.get(job.id):
+        job.analysis = previous.analysis
     jobs[job.id] = job
     return job
 
@@ -345,6 +349,35 @@ async def detect_key_endpoint(job_id: str):
     }
 
 
+async def _analyze(job: Job) -> Optional[dict]:
+    async with processing_semaphore:
+        from harmoneez.prepare import analyze_vocals
+        return await asyncio.to_thread(analyze_vocals, job.input_path, job.tmp_dir)
+
+
+@app.get("/api/vocal-range/{job_id}")
+async def vocal_range_endpoint(job_id: str):
+    """Original-key vocal range as MIDI pitches ({low, high, center}, or null if
+    nothing was sung). Isolates vocals on first call; prepare reuses the stems."""
+    from harmoneez.prepare import RANGE_FILE
+    job = get_job(job_id)
+
+    range_file = job.tmp_dir / RANGE_FILE
+    if range_file.is_file():
+        with open(range_file) as f:
+            return json.load(f)
+
+    if job.analysis is None:
+        job.analysis = asyncio.ensure_future(_analyze(job))
+    try:
+        # Shielded: a client navigating away shouldn't cancel work prepare will reuse
+        return await asyncio.shield(job.analysis)
+    except Exception as e:
+        job.analysis = None  # allow a retry
+        logger.exception("Vocal analysis failed for %s", job_id)
+        raise HTTPException(status_code=500, detail=f"Vocal analysis failed: {e}")
+
+
 class PrepareRequest(BaseModel):
     transpose: int = 0  # semitones to shift (-6 to +6)
     key: str = ''       # pre-detected key from key-select page
@@ -389,6 +422,13 @@ async def run_job(job: Job, runner):
 
 async def _run_prepare(job: Job):
     """Run separation + optional transpose + melody extraction."""
+    if job.analysis and not job.analysis.done():
+        # Let the song page's vocal analysis finish so prepare reuses its stems
+        job.current_step = "separating"
+        job.current_message = "Isolating vocals..."
+        await broadcast_progress(job)
+        await asyncio.wait([job.analysis])
+
     def runner(on_progress):
         from harmoneez.prepare import run_prepare
         return run_prepare(

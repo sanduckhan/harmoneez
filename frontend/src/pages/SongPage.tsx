@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { detectKey, prepareReference, resumeSession, audioUrl } from '../api';
+import { detectKey, getVocalRange, prepareReference, resumeSession, audioUrl } from '../api';
+import type { VocalRange } from '../types';
 import { useJobProgress } from '../hooks/useJobProgress';
 import { useWebAudioPlayer } from '../hooks/useWebAudioPlayer';
 import { ProgressPanel } from '../components/ProgressPanel';
+import { VocalRangeMeter } from '../components/VocalRangeMeter';
 import { formatTime, transposeKey } from '../utils';
 
 export function SongPage() {
@@ -16,6 +18,8 @@ export function SongPage() {
     (location.state as { filename?: string })?.filename ?? null
   );
   const [detectedKey, setDetectedKey] = useState<string | null>(null);
+  const [vocalRange, setVocalRange] = useState<VocalRange | null | undefined>(undefined);
+  const [rangeFailed, setRangeFailed] = useState(false);
   const [transposeOffset, setTransposeOffset] = useState(0);
   const [detecting, setDetecting] = useState(true);
   const [processing, setProcessing] = useState(false);
@@ -32,7 +36,10 @@ export function SongPage() {
   // Detect key on mount — try resumeSession first (restores from disk), fall back to direct detect
   useEffect(() => {
     if (!id) return;
+    let cancelled = false;
     setDetecting(true);
+    setVocalRange(undefined);
+    setRangeFailed(false);
 
     const ensureJobAndDetect = async () => {
       try {
@@ -42,12 +49,18 @@ export function SongPage() {
       const res = await detectKey(id);
       setDetectedKey(res.key);
       setDetecting(false);
+
+      // Slow (isolates vocals) — fills in while the user previews/transposes
+      getVocalRange(id)
+        .then(range => { if (!cancelled) setVocalRange(range); })
+        .catch(() => { if (!cancelled) setRangeFailed(true); });
     };
 
     ensureJobAndDetect().catch(() => {
       alert('Key detection failed');
       navigate('/');
     });
+    return () => { cancelled = true; };
   }, [id, navigate]);
 
   // Watch processing completion
@@ -147,6 +160,8 @@ export function SongPage() {
             >+</button>
           </div>
         </div>
+
+        <VocalRangeMeter range={vocalRange} failed={rangeFailed} transpose={transposeOffset} />
 
         {/* Transport */}
         <div className="space-y-3">

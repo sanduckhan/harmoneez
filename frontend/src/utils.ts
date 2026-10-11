@@ -7,6 +7,11 @@ export function formatTime(s: number): string {
 // Shared note names array
 export const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
 
+/** MIDI pitch to scientific pitch name, e.g. 60 → "C4" */
+export function midiToNoteName(midi: number): string {
+  return `${NOTE_NAMES[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}`;
+}
+
 /**
  * Binary search for the active melody note at a given time.
  */

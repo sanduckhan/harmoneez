@@ -17,6 +17,13 @@ export interface KeyDetectionResult {
   has_key_change: boolean;
 }
 
+// Original-key vocal range as MIDI pitches (center = median sung pitch)
+export interface VocalRange {
+  low: number;
+  high: number;
+  center: number;
+}
+
 export interface IntervalFile {
   interval: string;
   harmony_path?: string;
@@ -68,8 +75,11 @@ export interface MelodyNote {
 export interface PitchSample {
   time: number;
   hz: number | null;
-  midi: number | null;
+  midi: number | null;  // snapped into the melody's octave
   clarity: number;
+  // Octaves between what was sung and the melody (-1 = an octave below),
+  // smoothed over recent frames. null = no melody note to compare against.
+  octave: number | null;
 }
 
 export const INTERVAL_TYPES = [
